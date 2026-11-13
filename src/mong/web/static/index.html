@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mong Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/admin.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand__mark">M</div>
+      <h1 class="brand__name">Mong</h1>
+      <p class="brand__sub">Admin console for local NoMongo-T search indexes and documents.</p>
+    </div>
+    <nav class="nav" id="nav">
+      <button type="button" data-panel="overview" class="active">Overview</button>
+      <button type="button" data-panel="collections">Collections</button>
+      <button type="button" data-panel="indexes">Indexes</button>
+      <button type="button" data-panel="documents">Documents</button>
+    </nav>
+    <p class="sidebar__foot">Talks to mongot over gRPC TLS on port 27029. Credentials live in <span class="mono">.nomongo-t/</span>.</p>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="panel-title">Overview</h1>
+        <p id="panel-subtitle">Instance health, storage, and live indexes.</p>
+      </div>
+      <div class="status-pill" id="connection-pill">
+        <span class="status-pill__dot"></span>
+        <span id="connection-label">Checking…</span>
+      </div>
+    </div>
+
+    <section class="panel active" id="panel-overview">
+      <div class="grid stats" id="stats-grid"></div>
+      <div class="section">
+        <div class="section__head">
+          <h2>Live indexes</h2>
+          <button type="button" class="btn secondary" id="refresh-overview">Refresh</button>
+        </div>
+        <div class="section__body">
+          <div id="overview-indexes"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-collections">
+      <div class="layout-2">
+        <div class="section">
+          <div class="section__head">
+            <h2>Known collections</h2>
+            <button type="button" class="btn secondary" id="refresh-collections">Refresh</button>
+          </div>
+          <div class="section__body" id="collections-list"></div>
+        </div>
+        <div class="section">
+          <div class="section__head"><h2>Create collection</h2></div>
+          <div class="section__body">
+            <form class="form-grid" id="create-collection-form">
+              <div class="form-grid two">
+                <div class="field">
+                  <label for="collection-database">Database</label>
+                  <input id="collection-database" name="database" required placeholder="demo" />
+                </div>
+                <div class="field">
+                  <label for="collection-name">Name</label>
+                  <input id="collection-name" name="name" required placeholder="articles" />
+                </div>
+              </div>
+              <div class="actions">
+                <button type="submit" class="btn">Create collection</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-indexes">
+      <div class="layout-2">
+        <div class="section">
+          <div class="section__head">
+            <h2>Indexes</h2>
+            <button type="button" class="btn secondary" id="refresh-indexes">Refresh</button>
+          </div>
+          <div class="section__body">
+            <div class="toolbar">
+              <div class="field" style="min-width: 220px; flex: 1;">
+                <label for="index-filter-collection">Filter by collection</label>
+                <select id="index-filter-collection">
+                  <option value="">All collections</option>
+                </select>
+              </div>
+            </div>
+            <div id="indexes-list"></div>
+            <div class="details" id="index-detail" hidden>
+              <strong>Selected index</strong>
+              <pre id="index-detail-json"></pre>
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section__head"><h2>Create / edit index</h2></div>
+          <div class="section__body">
+            <form class="form-grid" id="index-form">
+              <input type="hidden" id="index-edit-id" />
+              <div class="field">
+                <label for="index-collection">Collection</label>
+                <select id="index-collection" required></select>
+              </div>
+              <div class="form-grid two">
+                <div class="field">
+                  <label for="index-name">Name</label>
+                  <input id="index-name" required placeholder="text" />
+                </div>
+                <div class="field">
+                  <label for="index-type">Type</label>
+                  <select id="index-type">
+                    <option value="SEARCH">SEARCH</option>
+                    <option value="VECTOR_SEARCH">VECTOR_SEARCH</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label for="index-definition">Definition (JSON)</label>
+                <textarea id="index-definition" spellcheck="false"></textarea>
+              </div>
+              <div class="actions">
+                <button type="submit" class="btn" id="index-submit">Create index</button>
+                <button type="button" class="btn secondary" id="index-reset">Reset form</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-documents">
+      <div class="docs-layout">
+        <div class="section docs-browse">
+          <div class="section__head">
+            <h2>Browse documents</h2>
+            <div class="mode-tabs" id="docs-mode-tabs" role="tablist">
+              <button type="button" class="mode-tab active" data-mode="browse">Browse</button>
+              <button type="button" class="mode-tab" data-mode="search">Search</button>
+              <button type="button" class="mode-tab" data-mode="vector">Vector</button>
+            </div>
+          </div>
+          <div class="section__body">
+            <div class="browse-toolbar">
+              <div class="field">
+                <label for="docs-collection">Collection</label>
+                <select id="docs-collection"></select>
+              </div>
+              <div class="field">
+                <label for="docs-index">Index</label>
+                <select id="docs-index"></select>
+              </div>
+              <div class="field">
+                <label for="docs-page-size">Page size</label>
+                <select id="docs-page-size">
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <div class="browse-toolbar__actions">
+                <button type="button" class="btn" id="run-docs-query">Browse</button>
+                <button type="button" class="btn secondary" id="docs-refresh">Refresh</button>
+              </div>
+            </div>
+
+            <div class="field query-field" id="docs-query-wrap" hidden>
+              <label for="docs-query">Query expression (JSON)</label>
+              <textarea id="docs-query" spellcheck="false"></textarea>
+              <p class="hint" id="docs-query-hint"></p>
+            </div>
+
+            <div class="pager" id="docs-pager" hidden>
+              <div class="pager__meta" id="docs-pager-meta">No results yet</div>
+              <div class="pager__controls">
+                <button type="button" class="btn secondary" id="docs-prev" disabled>Previous</button>
+                <span class="pager__page mono" id="docs-page-label">Page 1</span>
+                <button type="button" class="btn secondary" id="docs-next" disabled>Next</button>
+              </div>
+            </div>
+
+            <div id="docs-results" class="docs-results">
+              <div class="empty">Choose a collection and index, then run Browse or Search.</div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="docs-side">
+          <div class="section">
+            <div class="section__head"><h2>Upsert document</h2></div>
+            <div class="section__body">
+              <form class="form-grid" id="upsert-form">
+                <div class="field">
+                  <label for="upsert-collection">Collection</label>
+                  <select id="upsert-collection" required></select>
+                </div>
+                <div class="field">
+                  <label for="upsert-document">Document JSON</label>
+                  <textarea id="upsert-document" spellcheck="false" required></textarea>
+                </div>
+                <div class="actions">
+                  <button type="submit" class="btn">Upsert</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section__head"><h2>Delete by ID</h2></div>
+            <div class="section__body">
+              <form class="form-grid" id="delete-form">
+                <div class="field">
+                  <label for="delete-id">Document <span class="mono">_id</span></label>
+                  <input id="delete-id" required placeholder="coffee-1" />
+                </div>
+                <div class="actions">
+                  <button type="submit" class="btn danger">Delete</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section__head"><h2>Delete by query</h2></div>
+            <div class="section__body">
+              <form class="form-grid" id="delete-by-query-form">
+                <div class="field">
+                  <label for="dbq-collection">Collection</label>
+                  <select id="dbq-collection" required></select>
+                </div>
+                <div class="field">
+                  <label for="dbq-index">Search index</label>
+                  <select id="dbq-index" required></select>
+                </div>
+                <div class="field">
+                  <label for="dbq-query">Search expression (JSON)</label>
+                  <textarea id="dbq-query" spellcheck="false" required></textarea>
+                </div>
+                <div class="field">
+                  <label for="dbq-request-id">Request ID <span class="muted">(optional, for retries)</span></label>
+                  <input id="dbq-request-id" placeholder="expiry-sweep-2026-11-13" />
+                </div>
+                <div class="actions">
+                  <button type="submit" class="btn danger">Delete matching</button>
+                  <button type="button" class="btn secondary" id="dbq-poll" hidden>Refresh status</button>
+                </div>
+              </form>
+              <div class="details" id="dbq-status" hidden>
+                <pre id="dbq-status-json"></pre>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>
