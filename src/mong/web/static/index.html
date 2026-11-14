@@ -94,6 +94,34 @@
           </div>
         </div>
       </div>
+
+      <div class="section index-stats" id="index-stats" hidden>
+        <div class="section__head">
+          <div>
+            <h2 id="index-stats-title">Statistics</h2>
+            <p class="hint" id="index-stats-meta"></p>
+          </div>
+          <div class="index-stats__actions">
+            <button type="button" class="btn secondary" id="index-stats-refresh">Refresh</button>
+            <button type="button" class="btn ghost" id="index-stats-close">Close</button>
+          </div>
+        </div>
+        <div class="section__body">
+          <div class="grid stats" id="index-stats-summary"></div>
+          <h3 class="index-stats__heading">Memory</h3>
+          <div id="index-stats-memory"></div>
+          <h3 class="index-stats__heading">Fields</h3>
+          <p class="hint" id="index-stats-coverage"></p>
+          <div id="index-stats-fields"></div>
+          <div class="actions">
+            <button type="button" class="btn secondary" id="index-stats-more" hidden>Load more fields</button>
+          </div>
+          <details class="details">
+            <summary>Shared and unattributed storage</summary>
+            <div id="index-stats-buckets"></div>
+          </details>
+        </div>
+      </div>
     </section>
 
     <section class="panel" id="panel-documents">
@@ -130,7 +158,7 @@
 
             <div class="field query-field" id="docs-query-wrap" hidden>
               <label for="docs-query">Query expression (JSON)</label>
-              <textarea id="docs-query" spellcheck="false"></textarea>
+              <mong-query-editor id="docs-query" mode="search"></mong-query-editor>
               <p class="hint" id="docs-query-hint"></p>
             </div>
 
@@ -191,6 +219,7 @@
   </main>
 
   <div class="toast" id="toast"></div>
+  <script type="module" src="/static/js/query-editor/index.js"></script>
   <script src="/static/js/admin.js"></script>
 </body>
 </html>

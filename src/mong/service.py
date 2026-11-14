@@ -1,11 +1,13 @@
 """High-level NoMongo-T operations used by the admin API.
 
-Release 0.3 writes BSON directly into an index. There is no collection catalog,
-source document store, or delete-by-query workflow.
+Writes push BSON directly into an index (0.3+). There is no collection catalog,
+source document store, or delete-by-query workflow. 0.4 adds static mapping export
+and 0.5 adds index and per-field statistics.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from mongot_standalone import api, encode_bson
@@ -14,11 +16,15 @@ from mong.client import create_client
 from mong.serialize import (
     INDEX_TYPE_VALUES,
     bson_to_python,
+    index_mappings_to_dict,
     index_to_dict,
+    message_to_dict,
     parse_json_document,
     python_to_jsonable,
     status_to_dict,
 )
+
+MAX_FIELD_STATS_PAGE_SIZE = 500
 
 
 class MongotService:
@@ -112,6 +118,70 @@ class MongotService:
                 )
             )
         return index_to_dict(index)
+
+    def export_mappings(self, index_id: str, *, generation_id: str = "") -> dict[str, Any]:
+        """Static mapping inferred from the types observed in a search index.
+
+        Vector-search indexes are rejected by the server with FAILED_PRECONDITION.
+        """
+        with create_client() as client:
+            response = client.get_index_mappings(
+                api.GetIndexMappingsRequest(index_id=index_id, generation_id=generation_id)
+            )
+        return index_mappings_to_dict(response)
+
+    def index_stats(
+        self,
+        index_id: str,
+        *,
+        refresh: bool = False,
+        generation_id: str = "",
+    ) -> dict[str, Any]:
+        with create_client() as client:
+            stats = client.get_index_stats(
+                api.GetIndexStatsRequest(
+                    index_id=index_id,
+                    generation_id=generation_id,
+                    refresh=refresh,
+                )
+            )
+        return message_to_dict(stats)
+
+    def field_stats(
+        self,
+        index_id: str,
+        *,
+        refresh: bool = False,
+        paths: list[str] | None = None,
+        page_size: int = 100,
+        page_token: str = "",
+        generation_id: str = "",
+        wait_seconds: float = 10.0,
+    ) -> dict[str, Any]:
+        """One page of per-field storage/memory attribution.
+
+        Polls while the server is still collecting, up to ``wait_seconds``. Page tokens
+        bind to the first page's filters and page size, and later pages must not refresh.
+        """
+        request = api.GetIndexFieldStatsRequest(
+            index_id=index_id,
+            generation_id=generation_id,
+            refresh=refresh and not page_token,
+            paths=paths or [],
+            page_size=max(1, min(int(page_size), MAX_FIELD_STATS_PAGE_SIZE)),
+            page_token=page_token,
+        )
+        deadline = time.monotonic() + wait_seconds
+        with create_client() as client:
+            while True:
+                response = client.get_index_field_stats(request)
+                if response.state != api.STATS_COLLECTION_STATE_COLLECTING:
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                request.refresh = False
+                time.sleep(max(response.retry_after_millis, 100) / 1000)
+        return message_to_dict(response)
 
     def upsert_documents(
         self,
@@ -214,10 +284,13 @@ class MongotService:
         generation_id: str = "",
     ) -> dict[str, Any]:
         page_size = max(1, min(int(batch_size), 1000))
+        # `index` is an editor affordance. mongot receives the id on the request.
+        payload = dict(query)
+        payload.pop("index", None)
         with create_client() as client:
             request = api.QueryRequest(
                 index_id=index_id,
-                query_bson=encode_bson(query),
+                query_bson=encode_bson(payload),
                 batch_size=page_size,
                 generation_id=generation_id,
             )

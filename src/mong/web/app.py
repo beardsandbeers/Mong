@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 
 from flask import Flask, send_from_directory
+
+# Windows maps .js to text/plain. Module scripts are refused unless this is JavaScript.
+mimetypes.add_type("text/javascript", ".js")
 
 from mong.web.api import api_bp
 
@@ -17,6 +21,7 @@ def create_app() -> Flask:
         static_folder=str(STATIC_DIR),
         static_url_path="/static",
     )
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.register_blueprint(api_bp)
 
     @app.get("/")

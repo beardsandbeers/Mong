@@ -4,7 +4,7 @@ Admin UI and Python client for a locally running [NoMongo-T](https://github.com/
 
 ## Prerequisites
 
-- Docker with `nomongo-t` running `mybyte/nomongo-t:0.3.0` and healthy on port `27029`
+- Docker with `nomongo-t` running `mybyte/nomongo-t:0.5.0` and healthy on port `27029`
 - Python 3.11+
 
 ## Setup
@@ -25,6 +25,20 @@ docker cp nomongo-t:/var/lib/mongot/config/admin.token .nomongo-t/admin.token
 
 `.nomongo-t/` is gitignored — keep the admin token private.
 
+### Upgrading the container
+
+0.3.x, 0.4.x, and 0.5.x share the push API and data directory, so an upgrade keeps indexes, documents, and credentials as long as the new container mounts the same `/var/lib/mongot` volume:
+
+```powershell
+$volume = (docker inspect nomongo-t --format '{{json .Mounts}}' | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.Destination -eq '/var/lib/mongot' }).Name
+docker pull mybyte/nomongo-t:0.5.0
+docker stop nomongo-t
+docker rename nomongo-t nomongo-t-old
+docker run -d --name nomongo-t -p 27029:27029 -v "${volume}:/var/lib/mongot" mybyte/nomongo-t:0.5.0
+```
+
+Keep the server image and `mongot-standalone-client` on the same version. Collection-backed 0.2.x data directories are not compatible.
+
 ## Run the admin UI
 
 ```powershell
@@ -38,8 +52,10 @@ The UI can:
 - show instance status and live indexes
 - create / edit / drop search and vector indexes (names are instance-wide)
 - browse all documents with cursor pagination (Browse mode has no query box; the index must store source)
-- search / vector-search with a JSON expression
+- search / vector-search with a JSON expression. The editor completes operators, field paths from the index definition and the fields mongot has actually indexed (`GET /api/indexes/<id>/mappings`), and index names. It flags mismatches such as `text` on a `token` field. An optional `"index"` key stays in sync with the index dropdown and is not sent to mongot.
 - upsert documents and delete by ID
+- show per-index statistics (**Stats**): live and Lucene document counts, index and directory size, bytes per document, memory domains, and per-field disk attribution with the shared and unattributed storage buckets. Values marked `*` are partial measurements; hover for the method and omitted components. `—` means the server could not measure it.
+- export a dynamic search index's observed mapping as a static definition (**Export mapping**). It loads into the create form as `<name>_static`; create it and reingest the documents.
 
 Documents live in the index. Updating an index definition rebuilds an empty generation, so the previous documents have to be loaded again. There is no collection catalog and no delete-by-query.
 
@@ -83,6 +99,9 @@ Example relationship lookup in the admin UI search box (with `returnStoredSource
 | `GET` | `/api/status` | Instance status (`?metrics=true` includes scrubbed metrics) |
 | `GET/POST` | `/api/indexes` | List / create indexes |
 | `GET/PUT/DELETE` | `/api/indexes/<id>` | Get / update / drop index |
+| `GET` | `/api/indexes/<id>/mappings` | Export observed mapping as a static definition (search indexes only) |
+| `GET` | `/api/indexes/<id>/stats` | Index statistics (`?refresh=true` starts a fresh collection) |
+| `GET` | `/api/indexes/<id>/field-stats` | Per-field statistics page (`refresh`, repeated `path`, `page_size` ≤ 500, `page_token`) |
 | `POST` | `/api/indexes/<id>/documents` | Upsert documents into the index |
 | `DELETE` | `/api/indexes/<id>/documents/<doc_id>` | Delete a document by `_id` |
 | `POST` | `/api/indexes/<id>/search` | Text or vector search (paged) |
@@ -95,10 +114,23 @@ Optional overrides:
 - `NOMONGOT_ADDRESS` (default `localhost:27029`)
 - `NOMONGOT_CREDENTIALS_DIR` (default `.nomongo-t`)
 
-The Python client dependency is `mongot-standalone-client` 0.3.0, matching the push-only mongot API (no collections).
+The Python client dependency is `mongot-standalone-client` 0.5.0, matching the push-only mongot API (no collections).
+
+## Query editor bundle
+
+The search box uses a vendored CodeMirror build at `src/mong/web/static/vendor/codemirror.js`. Rebuild it only when upgrading CodeMirror:
+
+```powershell
+cd frontend
+npm install
+npm run build:vendor
+npm test
+```
 
 ## Test
 
 ```powershell
 pytest
+cd frontend
+npm test
 ```

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from bson import json_util
+from google.protobuf.descriptor import FieldDescriptor
+from google.protobuf.message import Message
 from mongot_standalone import api, decode_bson
 
 INDEX_TYPE_NAMES = {
@@ -149,6 +152,54 @@ def _json_safe_number(value: Any) -> Any:
 
 def _json_safe_mapping(mapping: Any) -> dict[str, Any]:
     return {str(key): _json_safe_number(val) for key, val in dict(mapping).items()}
+
+
+def _enum_name(field: FieldDescriptor, number: int) -> str:
+    """``MEASUREMENT_METHOD_FILE_RANGE`` -> ``FILE_RANGE``."""
+    value = field.enum_type.values_by_number.get(number)
+    if value is None:
+        return str(number)
+    prefix = re.sub(r"(?<!^)(?=[A-Z])", "_", field.enum_type.name).upper() + "_"
+    return value.name.removeprefix(prefix)
+
+
+def _scalar(field: FieldDescriptor, value: Any) -> Any:
+    if field.type == FieldDescriptor.TYPE_ENUM:
+        return _enum_name(field, value)
+    if field.message_type is not None:
+        return message_to_dict(value)
+    return _json_safe_number(value)
+
+
+def message_to_dict(message: Message) -> dict[str, Any]:
+    """Proto message to snake_case dict.
+
+    Unset optional scalars and unset sub-messages become ``None``: in the stats API a
+    missing value means "unavailable" while a present zero is a real measurement.
+    """
+    out: dict[str, Any] = {}
+    for field in message.DESCRIPTOR.fields:
+        value = getattr(message, field.name)
+        if field.message_type is not None and field.message_type.GetOptions().map_entry:
+            value_field = field.message_type.fields_by_name["value"]
+            out[field.name] = {str(k): _scalar(value_field, v) for k, v in value.items()}
+        elif field.is_repeated:
+            out[field.name] = [_scalar(field, item) for item in value]
+        elif field.has_presence and not message.HasField(field.name):
+            out[field.name] = None
+        else:
+            out[field.name] = _scalar(field, value)
+    return out
+
+
+def index_mappings_to_dict(response: api.GetIndexMappingsResponse) -> dict[str, Any]:
+    return {
+        "index_id": response.index_id,
+        "generation_id": response.generation_id or None,
+        "active_revision": response.active_revision,
+        "mappings": python_to_jsonable(json_util.loads(response.mappings_json)),
+        "definition": python_to_jsonable(json_util.loads(response.definition_json)),
+    }
 
 
 def status_to_dict(status: api.ServiceStatus, *, include_metrics: bool = False) -> dict[str, Any]:

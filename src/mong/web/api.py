@@ -30,6 +30,10 @@ def _from_rpc(exc: Exception):
     return _error(str(exc), 500)
 
 
+def _flag(name: str) -> bool:
+    return request.args.get(name, "").lower() in {"1", "true", "yes"}
+
+
 @api_bp.get("/health")
 def health():
     return jsonify({"ok": True})
@@ -37,7 +41,7 @@ def health():
 
 @api_bp.get("/status")
 def status():
-    include_metrics = request.args.get("metrics", "").lower() in {"1", "true", "yes"}
+    include_metrics = _flag("metrics")
     try:
         return jsonify(service.status(include_metrics=include_metrics))
     except Exception as exc:
@@ -103,6 +107,50 @@ def drop_index(index_id: str):
             expected_revision=body.get("expected_revision"),
         )
         return jsonify(index)
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.get("/indexes/<index_id>/mappings")
+def export_mappings(index_id: str):
+    try:
+        return jsonify(
+            service.export_mappings(
+                index_id,
+                generation_id=request.args.get("generation_id", ""),
+            )
+        )
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.get("/indexes/<index_id>/stats")
+def index_stats(index_id: str):
+    try:
+        return jsonify(
+            service.index_stats(
+                index_id,
+                refresh=_flag("refresh"),
+                generation_id=request.args.get("generation_id", ""),
+            )
+        )
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.get("/indexes/<index_id>/field-stats")
+def field_stats(index_id: str):
+    try:
+        return jsonify(
+            service.field_stats(
+                index_id,
+                refresh=_flag("refresh"),
+                paths=[path for path in request.args.getlist("path") if path],
+                page_size=int(request.args.get("page_size") or 100),
+                page_token=request.args.get("page_token", ""),
+                generation_id=request.args.get("generation_id", ""),
+            )
+        )
     except Exception as exc:
         return _from_rpc(exc)
 
