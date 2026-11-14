@@ -1,6 +1,5 @@
 (() => {
   const state = {
-    collections: [],
     indexes: [],
     selectedIndexId: null,
     docs: {
@@ -12,10 +11,6 @@
       query: null,
       vector: false,
       loading: false,
-    },
-    dbq: {
-      collectionId: null,
-      requestId: null,
     },
   };
 
@@ -48,18 +43,10 @@
   "body": "A short guide to better coffee."
 }`;
 
-  const DEFAULT_DBQ_QUERY = `{
-  "text": {
-    "path": "title",
-    "query": "expired"
-  }
-}`;
-
   const PANEL_META = {
-    overview: ["Overview", "Instance health, storage, and live indexes."],
-    collections: ["Collections", "Create and inspect mongot collections."],
+    overview: ["Overview", "Instance health and live indexes."],
     indexes: ["Indexes", "Create, edit, and drop search or vector indexes."],
-    documents: ["Documents", "Browse, search, upsert, and delete by query."],
+    documents: ["Documents", "Browse, search, upsert, and delete by id."],
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -103,6 +90,18 @@
     return `${(n / 1024 ** 3).toFixed(2)} GB`;
   }
 
+  function formatCount(value) {
+    if (value == null || value === "") return "—";
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return Math.round(n).toLocaleString();
+  }
+
+  function formatBytesOrDash(value) {
+    if (value == null || value === "") return "—";
+    return formatBytes(value);
+  }
+
   function badgeForState(stateName) {
     const raw = (stateName || "unknown").toLowerCase();
     let cls = "";
@@ -125,62 +124,17 @@
     return s.length > 14 ? `${s.slice(0, 8)}…` : s;
   }
 
-  function fillCollectionSelects() {
-    const options = state.collections
-      .map((c) => {
-        const label = c.database && c.name
-          ? `${c.database}.${c.name}`
-          : c.collection_id;
-        return `<option value="${escapeHtml(c.collection_id)}">${escapeHtml(label)}</option>`;
-      })
-      .join("");
-
-    ["#index-collection", "#docs-collection", "#upsert-collection", "#dbq-collection"].forEach((sel) => {
-      const el = $(sel);
-      const current = el.value;
-      el.innerHTML = options || `<option value="">No collections</option>`;
-      if (current && [...el.options].some((o) => o.value === current)) el.value = current;
-    });
-
-    const filter = $("#index-filter-collection");
-    const filterCurrent = filter.value;
-    filter.innerHTML = `<option value="">All collections</option>${options}`;
-    if (filterCurrent && [...filter.options].some((o) => o.value === filterCurrent)) {
-      filter.value = filterCurrent;
-    }
-
-    fillIndexSelectForDocs();
-    fillIndexSelectForDbq();
-  }
-
-  function fillIndexSelect(selectId, collectionSelectId, { searchOnly = false } = {}) {
-    const collectionId = $(collectionSelectId).value;
-    const indexes = state.indexes.filter((idx) => {
-      if (collectionId && idx.collection_id !== collectionId) return false;
-      if (searchOnly && idx.type === "VECTOR_SEARCH") return false;
-      return true;
-    });
-    const el = $(selectId);
-    const current = el.value;
-    el.innerHTML = indexes
+  function fillIndexSelects() {
+    const options = state.indexes
       .map((idx) => `<option value="${escapeHtml(idx.index_id)}">${escapeHtml(idx.name)} (${escapeHtml(idx.type)})</option>`)
       .join("") || `<option value="">No indexes</option>`;
-    if (current && [...el.options].some((o) => o.value === current)) el.value = current;
-  }
-
-  function fillIndexSelectForDocs() {
-    fillIndexSelect("#docs-index", "#docs-collection");
-  }
-
-  function fillIndexSelectForDbq() {
-    fillIndexSelect("#dbq-index", "#dbq-collection", { searchOnly: true });
-  }
-
-  function collectionLabel(collectionId) {
-    const found = state.collections.find((c) => c.collection_id === collectionId);
-    if (!found) return shortId(collectionId);
-    if (found.database && found.name) return `${found.database}.${found.name}`;
-    return shortId(collectionId);
+    ["#docs-index", "#upsert-index"].forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      const current = el.value;
+      el.innerHTML = options;
+      if (current && [...el.options].some((o) => o.value === current)) el.value = current;
+    });
   }
 
   function renderIndexTable(targetSelector, indexes, { actions = false } = {}) {
@@ -190,24 +144,36 @@
       return;
     }
     host.innerHTML = `
+      <div class="table-scroll">
       <table class="table">
         <thead>
           <tr>
             <th>Name</th>
             <th>Type</th>
             <th>State</th>
-            <th>Collection</th>
+            <th class="num">Docs</th>
+            <th class="num">Size</th>
+            <th class="num">Files</th>
+            <th class="num">Segments</th>
+            <th class="num">Queries</th>
             <th>Revision</th>
             ${actions ? "<th></th>" : ""}
           </tr>
         </thead>
         <tbody>
-          ${indexes.map((idx) => `
+          ${indexes.map((idx) => {
+            const stats = idx.stats || {};
+            const docs = stats.documents;
+            return `
             <tr data-index-id="${escapeHtml(idx.index_id)}">
               <td><strong>${escapeHtml(idx.name)}</strong><div class="mono muted">${escapeHtml(shortId(idx.index_id))}</div></td>
               <td>${escapeHtml(idx.type)}</td>
               <td>${badgeForState(idx.lifecycle_state)}</td>
-              <td>${escapeHtml(collectionLabel(idx.collection_id))}</td>
+              <td class="num">${formatCount(docs)}</td>
+              <td class="num">${formatBytesOrDash(stats.size_bytes)}</td>
+              <td class="num">${formatCount(stats.files)}</td>
+              <td class="num">${formatCount(stats.segments)}</td>
+              <td class="num">${formatCount(stats.queries)}</td>
               <td class="mono">${escapeHtml(idx.active_revision)} / ${escapeHtml(idx.desired_revision)}</td>
               ${actions ? `
                 <td class="actions">
@@ -215,10 +181,11 @@
                   <button type="button" class="btn ghost" data-action="select">Details</button>
                   <button type="button" class="btn ghost" data-action="drop">Drop</button>
                 </td>` : ""}
-            </tr>
-          `).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
+      </div>
     `;
   }
 
@@ -229,7 +196,7 @@
     if (status.management_ready) {
       pill.classList.add("ok");
       pill.classList.remove("bad");
-      label.textContent = `Ready · ${shortId(status.instance_id)}`;
+      label.textContent = "Ready";
     } else {
       pill.classList.add("bad");
       pill.classList.remove("ok");
@@ -239,9 +206,8 @@
     const indexes = status.indexes || [];
     $("#stats-grid").innerHTML = [
       ["Indexes", indexes.length],
-      ["Source store", formatBytes(status.source_bytes)],
-      ["Store files", formatBytes(status.store_file_bytes)],
       ["Free disk", formatBytes(status.free_disk_bytes)],
+      ["Metrics", status.metrics_count ?? 0],
     ].map(([labelText, value]) => `
       <div class="stat">
         <div class="stat__label">${labelText}</div>
@@ -251,46 +217,15 @@
 
     state.indexes = indexes;
     renderIndexTable("#overview-indexes", indexes);
-  }
-
-  async function loadCollections() {
-    const data = await api("/api/collections");
-    state.collections = data.collections || [];
-    fillCollectionSelects();
-
-    const host = $("#collections-list");
-    if (!state.collections.length) {
-      host.innerHTML = `<div class="empty">No collections known yet. Create one to get started.</div>`;
-      return;
-    }
-    host.innerHTML = `
-      <table class="table">
-        <thead>
-          <tr><th>Database</th><th>Name</th><th>Collection ID</th><th>Sequence</th></tr>
-        </thead>
-        <tbody>
-          ${state.collections.map((c) => `
-            <tr>
-              <td>${escapeHtml(c.database || "—")}</td>
-              <td>${escapeHtml(c.name || "—")}</td>
-              <td class="mono">${escapeHtml(c.collection_id)}</td>
-              <td class="mono">${escapeHtml(c.accepted_sequence ?? 0)}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    `;
+    fillIndexSelects();
   }
 
   async function loadIndexes() {
-    const collectionId = $("#index-filter-collection").value;
-    const path = collectionId
-      ? `/api/indexes?collection_id=${encodeURIComponent(collectionId)}`
-      : "/api/indexes";
-    const data = await api(path);
+    const data = await api("/api/indexes");
     state.indexes = data.indexes || [];
     renderIndexTable("#indexes-list", state.indexes, { actions: true });
-    fillIndexSelectForDocs();
+    renderIndexTable("#overview-indexes", state.indexes);
+    fillIndexSelects();
   }
 
   function setIndexFormDefaults() {
@@ -298,7 +233,6 @@
     $("#index-name").value = "";
     $("#index-name").disabled = false;
     $("#index-type").disabled = false;
-    $("#index-collection").disabled = false;
     $("#index-type").value = "SEARCH";
     $("#index-definition").value = DEFAULT_SEARCH_DEFINITION;
     $("#index-submit").textContent = "Create index";
@@ -307,12 +241,10 @@
   function editIndex(index) {
     state.selectedIndexId = index.index_id;
     $("#index-edit-id").value = index.index_id;
-    $("#index-collection").value = index.collection_id;
     $("#index-name").value = index.name;
     $("#index-name").disabled = true;
     $("#index-type").value = index.type;
     $("#index-type").disabled = true;
-    $("#index-collection").disabled = true;
     $("#index-definition").value = JSON.stringify(index.definition || {}, null, 2);
     $("#index-submit").textContent = "Update definition";
     showIndexDetail(index);
@@ -325,7 +257,7 @@
   }
 
   async function dropIndex(index) {
-    if (!confirm(`Drop index "${index.name}"? Source documents remain.`)) return;
+    if (!confirm(`Drop index "${index.name}"? Its documents are removed with the index.`)) return;
     await api(`/api/indexes/${encodeURIComponent(index.index_id)}`, {
       method: "DELETE",
       body: JSON.stringify({ expected_revision: index.desired_revision }),
@@ -349,10 +281,21 @@
     return hit.score ?? hit.$search?.score ?? null;
   }
 
+  function documentBody(hit) {
+    const nested = hit?.storedSource ?? hit?.stored_source;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      if (nested._id == null && hit._id != null) return { _id: hit._id, ...nested };
+      return nested;
+    }
+    return hit;
+  }
+
   function renderDocCard(hit, index) {
-    const id = hitId(hit);
+    const browsing = state.docs.mode === "browse";
+    const source = browsing ? documentBody(hit) : hit;
+    const id = hitId(source) || hitId(hit);
     const score = hitScore(hit);
-    const fields = previewFields(hit);
+    const fields = browsing ? [] : previewFields(hit);
     return `
       <article class="doc-card" data-result-index="${index}">
         <div class="doc-card__head">
@@ -360,13 +303,13 @@
             <div class="doc-card__id">${escapeHtml(id || "(no _id)")}</div>
           </div>
           <div class="doc-card__meta">
-            ${score !== null && score !== "" ? `<span class="score-pill">${escapeHtml(score)}</span>` : ""}
-            <button type="button" class="btn ghost" data-action="toggle-json">JSON</button>
+            ${!browsing && score !== null && score !== "" ? `<span class="score-pill">${escapeHtml(score)}</span>` : ""}
+            ${browsing ? "" : `<button type="button" class="btn ghost" data-action="toggle-json">JSON</button>`}
             ${id !== "" ? `<button type="button" class="btn ghost" data-action="delete-doc" data-delete-id="${escapeHtml(id)}">Delete</button>` : ""}
           </div>
         </div>
         <div class="doc-card__body">
-          <div class="doc-card__preview">
+          ${browsing ? "" : `<div class="doc-card__preview">
             ${fields.length
               ? fields.map(([key, value]) => `
                   <div class="doc-kv">
@@ -374,8 +317,8 @@
                     <div class="doc-kv__val">${escapeHtml(typeof value === "string" ? value : JSON.stringify(value))}</div>
                   </div>`).join("")
               : `<div class="muted">No preview fields. Open JSON for the full document.</div>`}
-          </div>
-          <pre class="doc-card__json" hidden>${escapeHtml(JSON.stringify(hit, null, 2))}</pre>
+          </div>`}
+          <pre class="doc-card__json${browsing ? " doc-card__json--full" : ""}"${browsing ? "" : " hidden"}>${escapeHtml(JSON.stringify(source, null, 2))}</pre>
         </div>
       </article>
     `;
@@ -412,7 +355,7 @@
     const page = state.docs.pages[state.docs.pageIndex];
     const host = $("#docs-results");
     if (!page) {
-      host.innerHTML = `<div class="empty">Choose a collection and index, then run Browse or Search.</div>`;
+      host.innerHTML = `<div class="empty">Choose an index, then run Browse or Search.</div>`;
       updatePager();
       return;
     }
@@ -569,18 +512,8 @@
     renderResultsPage();
   }
 
-  function showDbqStatus(result) {
-    state.dbq.collectionId = result.collection_id;
-    state.dbq.requestId = result.request_id;
-    $("#dbq-status").hidden = false;
-    $("#dbq-poll").hidden = false;
-    $("#dbq-request-id").value = result.request_id;
-    $("#dbq-status-json").textContent = JSON.stringify(result, null, 2);
-  }
-
   async function refreshAll() {
     await loadOverview();
-    await loadCollections();
     await loadIndexes();
   }
 
@@ -598,11 +531,7 @@
     });
 
     $("#refresh-overview").addEventListener("click", () => loadOverview().catch((e) => toast(e.message, "error")));
-    $("#refresh-collections").addEventListener("click", () => loadCollections().catch((e) => toast(e.message, "error")));
     $("#refresh-indexes").addEventListener("click", () => loadIndexes().catch((e) => toast(e.message, "error")));
-    $("#index-filter-collection").addEventListener("change", () => loadIndexes().catch((e) => toast(e.message, "error")));
-    $("#docs-collection").addEventListener("change", fillIndexSelectForDocs);
-    $("#dbq-collection").addEventListener("change", fillIndexSelectForDbq);
 
     $("#index-type").addEventListener("change", (event) => {
       if ($("#index-edit-id").value) return;
@@ -612,24 +541,6 @@
     });
 
     $("#index-reset").addEventListener("click", setIndexFormDefaults);
-
-    $("#create-collection-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      try {
-        const collection = await api("/api/collections", {
-          method: "POST",
-          body: JSON.stringify({
-            database: $("#collection-database").value.trim(),
-            name: $("#collection-name").value.trim(),
-          }),
-        });
-        toast(`Created ${collection.database}.${collection.name}`);
-        event.target.reset();
-        await refreshAll();
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
 
     $("#index-form").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -645,6 +556,9 @@
       try {
         if (editId) {
           const current = state.indexes.find((idx) => idx.index_id === editId);
+          if (!confirm("Updating the definition rebuilds an empty index. Documents in it are dropped and must be reingested.")) {
+            return;
+          }
           await api(`/api/indexes/${encodeURIComponent(editId)}`, {
             method: "PUT",
             body: JSON.stringify({
@@ -652,12 +566,11 @@
               expected_revision: current?.desired_revision,
             }),
           });
-          toast("Index definition updated");
+          toast("Index rebuilt empty. Reingest documents.");
         } else {
           await api("/api/indexes", {
             method: "POST",
             body: JSON.stringify({
-              collection_id: $("#index-collection").value,
               name: $("#index-name").value.trim(),
               type: $("#index-type").value,
               definition,
@@ -734,11 +647,16 @@
         return;
       }
       try {
-        const result = await api(`/api/collections/${encodeURIComponent($("#upsert-collection").value)}/documents`, {
+        const indexId = $("#upsert-index").value;
+        if (!indexId) {
+          toast("Select an index first", "error");
+          return;
+        }
+        const result = await api(`/api/indexes/${encodeURIComponent(indexId)}/documents`, {
           method: "POST",
           body: JSON.stringify({ documents: [document] }),
         });
-        toast(`Upserted ${result.upserted_count} document(s)`);
+        toast(`Indexed ${result.indexed_count} document(s)`);
       } catch (err) {
         toast(err.message, "error");
       }
@@ -746,61 +664,15 @@
 
     $("#delete-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const collectionId = $("#upsert-collection").value;
+      const indexId = $("#upsert-index").value;
       const id = $("#delete-id").value.trim();
-      if (!collectionId || !id) return;
+      if (!indexId || !id) return;
       try {
         const result = await api(
-          `/api/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(id)}`,
+          `/api/indexes/${encodeURIComponent(indexId)}/documents/${encodeURIComponent(id)}`,
           { method: "DELETE", body: JSON.stringify({ id }) },
         );
-        toast(`Deleted ${result.deleted_count}`);
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
-
-    $("#delete-by-query-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const collectionId = $("#dbq-collection").value;
-      const indexId = $("#dbq-index").value;
-      if (!collectionId || !indexId) {
-        toast("Collection and search index are required", "error");
-        return;
-      }
-      let query;
-      try {
-        query = JSON.parse($("#dbq-query").value || "{}");
-      } catch {
-        toast("Delete-by-query expression must be valid JSON", "error");
-        return;
-      }
-      if (!confirm("Delete all documents matching this query? This is ordered and non-atomic.")) return;
-      try {
-        const body = { index_id: indexId, query };
-        const requestId = $("#dbq-request-id").value.trim();
-        if (requestId) body.request_id = requestId;
-        const result = await api(
-          `/api/collections/${encodeURIComponent(collectionId)}/delete-by-query`,
-          { method: "POST", body: JSON.stringify(body) },
-        );
-        showDbqStatus(result);
-        toast(result.complete
-          ? `Deleted ${result.deleted_count} (matched ${result.matched_count})`
-          : `Delete in progress · ${result.deleted_count}/${result.matched_count}`);
-      } catch (err) {
-        toast(err.message, "error");
-      }
-    });
-
-    $("#dbq-poll").addEventListener("click", async () => {
-      if (!state.dbq.collectionId || !state.dbq.requestId) return;
-      try {
-        const result = await api(
-          `/api/collections/${encodeURIComponent(state.dbq.collectionId)}/delete-by-query/${encodeURIComponent(state.dbq.requestId)}`,
-        );
-        showDbqStatus(result);
-        toast(result.complete ? "Delete-by-query complete" : "Still running");
+        toast(`Processed ${result.processed_count} id(s)`);
       } catch (err) {
         toast(err.message, "error");
       }
@@ -817,13 +689,13 @@
 
       const button = event.target.closest("button[data-action='delete-doc']");
       if (!button) return;
-      const collectionId = $("#docs-collection").value;
+      const indexId = $("#docs-index").value;
       try {
         const result = await api(
-          `/api/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(button.dataset.deleteId)}`,
+          `/api/indexes/${encodeURIComponent(indexId)}/documents/${encodeURIComponent(button.dataset.deleteId)}`,
           { method: "DELETE", body: JSON.stringify({ id: button.dataset.deleteId }) },
         );
-        toast(`Deleted ${result.deleted_count}`);
+        toast(`Processed ${result.processed_count} id(s)`);
         await startDocsQuery();
       } catch (err) {
         toast(err.message, "error");
@@ -834,7 +706,6 @@
   async function boot() {
     $("#index-definition").value = DEFAULT_SEARCH_DEFINITION;
     $("#upsert-document").value = DEFAULT_DOCUMENT;
-    $("#dbq-query").value = DEFAULT_DBQ_QUERY;
     setDocsMode("browse");
     bindEvents();
     try {

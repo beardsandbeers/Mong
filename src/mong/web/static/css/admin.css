@@ -201,7 +201,7 @@ button {
 }
 
 .grid.stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   margin-bottom: 18px;
 }
 
@@ -347,10 +347,21 @@ button {
   padding-inline: 8px;
 }
 
+.table-scroll {
+  overflow-x: auto;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.92rem;
+}
+
+.table th.num,
+.table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .table th,
@@ -672,6 +683,11 @@ button {
 
 .doc-card__json[hidden] {
   display: none;
+}
+
+.doc-card__json--full {
+  margin-top: 0;
+  max-height: none;
 }
 
 .score-pill {

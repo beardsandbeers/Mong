@@ -11,7 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
     "faker>=30.0",
     "flask>=3.0",
-    "mongot-standalone-client==0.2.0",
+    "mongot-standalone-client==0.3.0",
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
@@ -31,4 +32,4 @@ mong = ["web/static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]

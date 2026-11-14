@@ -47,5 +47,5 @@ Thumbs.db
 # NoMongo-T credentials (TLS cert + admin token)
 .nomongo-t/
 
-# Local admin registry of known collections
+# Leftover local collection registry from the 0.2 admin API
 .mong-admin/

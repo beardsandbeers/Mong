@@ -18,7 +18,6 @@
     </div>
     <nav class="nav" id="nav">
       <button type="button" data-panel="overview" class="active">Overview</button>
-      <button type="button" data-panel="collections">Collections</button>
       <button type="button" data-panel="indexes">Indexes</button>
       <button type="button" data-panel="documents">Documents</button>
     </nav>
@@ -29,7 +28,7 @@
     <div class="topbar">
       <div>
         <h1 id="panel-title">Overview</h1>
-        <p id="panel-subtitle">Instance health, storage, and live indexes.</p>
+        <p id="panel-subtitle">Instance health and live indexes.</p>
       </div>
       <div class="status-pill" id="connection-pill">
         <span class="status-pill__dot"></span>
@@ -50,38 +49,6 @@
       </div>
     </section>
 
-    <section class="panel" id="panel-collections">
-      <div class="layout-2">
-        <div class="section">
-          <div class="section__head">
-            <h2>Known collections</h2>
-            <button type="button" class="btn secondary" id="refresh-collections">Refresh</button>
-          </div>
-          <div class="section__body" id="collections-list"></div>
-        </div>
-        <div class="section">
-          <div class="section__head"><h2>Create collection</h2></div>
-          <div class="section__body">
-            <form class="form-grid" id="create-collection-form">
-              <div class="form-grid two">
-                <div class="field">
-                  <label for="collection-database">Database</label>
-                  <input id="collection-database" name="database" required placeholder="demo" />
-                </div>
-                <div class="field">
-                  <label for="collection-name">Name</label>
-                  <input id="collection-name" name="name" required placeholder="articles" />
-                </div>
-              </div>
-              <div class="actions">
-                <button type="submit" class="btn">Create collection</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <section class="panel" id="panel-indexes">
       <div class="layout-2">
         <div class="section">
@@ -90,14 +57,6 @@
             <button type="button" class="btn secondary" id="refresh-indexes">Refresh</button>
           </div>
           <div class="section__body">
-            <div class="toolbar">
-              <div class="field" style="min-width: 220px; flex: 1;">
-                <label for="index-filter-collection">Filter by collection</label>
-                <select id="index-filter-collection">
-                  <option value="">All collections</option>
-                </select>
-              </div>
-            </div>
             <div id="indexes-list"></div>
             <div class="details" id="index-detail" hidden>
               <strong>Selected index</strong>
@@ -110,10 +69,6 @@
           <div class="section__body">
             <form class="form-grid" id="index-form">
               <input type="hidden" id="index-edit-id" />
-              <div class="field">
-                <label for="index-collection">Collection</label>
-                <select id="index-collection" required></select>
-              </div>
               <div class="form-grid two">
                 <div class="field">
                   <label for="index-name">Name</label>
@@ -155,10 +110,6 @@
           <div class="section__body">
             <div class="browse-toolbar">
               <div class="field">
-                <label for="docs-collection">Collection</label>
-                <select id="docs-collection"></select>
-              </div>
-              <div class="field">
                 <label for="docs-index">Index</label>
                 <select id="docs-index"></select>
               </div>
@@ -193,7 +144,7 @@
             </div>
 
             <div id="docs-results" class="docs-results">
-              <div class="empty">Choose a collection and index, then run Browse or Search.</div>
+              <div class="empty">Choose an index, then run Browse or Search.</div>
             </div>
           </div>
         </div>
@@ -204,8 +155,8 @@
             <div class="section__body">
               <form class="form-grid" id="upsert-form">
                 <div class="field">
-                  <label for="upsert-collection">Collection</label>
-                  <select id="upsert-collection" required></select>
+                  <label for="upsert-index">Index</label>
+                  <select id="upsert-index" required></select>
                 </div>
                 <div class="field">
                   <label for="upsert-document">Document JSON</label>
@@ -225,6 +176,7 @@
                 <div class="field">
                   <label for="delete-id">Document <span class="mono">_id</span></label>
                   <input id="delete-id" required placeholder="coffee-1" />
+                  <p class="hint">Uses the index selected above. Missing ids still count as processed.</p>
                 </div>
                 <div class="actions">
                   <button type="submit" class="btn danger">Delete</button>
@@ -233,36 +185,6 @@
             </div>
           </div>
 
-          <div class="section">
-            <div class="section__head"><h2>Delete by query</h2></div>
-            <div class="section__body">
-              <form class="form-grid" id="delete-by-query-form">
-                <div class="field">
-                  <label for="dbq-collection">Collection</label>
-                  <select id="dbq-collection" required></select>
-                </div>
-                <div class="field">
-                  <label for="dbq-index">Search index</label>
-                  <select id="dbq-index" required></select>
-                </div>
-                <div class="field">
-                  <label for="dbq-query">Search expression (JSON)</label>
-                  <textarea id="dbq-query" spellcheck="false" required></textarea>
-                </div>
-                <div class="field">
-                  <label for="dbq-request-id">Request ID <span class="muted">(optional, for retries)</span></label>
-                  <input id="dbq-request-id" placeholder="expiry-sweep-2026-11-13" />
-                </div>
-                <div class="actions">
-                  <button type="submit" class="btn danger">Delete matching</button>
-                  <button type="button" class="btn secondary" id="dbq-poll" hidden>Refresh status</button>
-                </div>
-              </form>
-              <div class="details" id="dbq-status" hidden>
-                <pre id="dbq-status-json"></pre>
-              </div>
-            </div>
-          </div>
         </aside>
       </div>
     </section>

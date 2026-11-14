@@ -1,21 +1,21 @@
-"""Fake CRM entity generators (Accounts, Contacts, Opportunities)."""
+"""Deterministic fake CRM generators (Accounts, Contacts, Opportunities)."""
 
 from scripts.crm.generate import (
-    generate_account,
-    generate_accounts,
-    generate_contact,
-    generate_contacts,
+    AccountPlan,
+    CrmGenerator,
+    CrmSpec,
+    account_id,
+    contact_id,
     generate_crm_dataset,
-    generate_opportunities,
-    generate_opportunity,
+    opportunity_id,
 )
 
 __all__ = [
-    "generate_account",
-    "generate_accounts",
-    "generate_contact",
-    "generate_contacts",
+    "AccountPlan",
+    "CrmGenerator",
+    "CrmSpec",
+    "account_id",
+    "contact_id",
     "generate_crm_dataset",
-    "generate_opportunities",
-    "generate_opportunity",
+    "opportunity_id",
 ]

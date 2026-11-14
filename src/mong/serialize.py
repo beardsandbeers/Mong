@@ -41,48 +41,103 @@ def parse_json_document(raw: str | dict | list) -> Any:
     return json_util.loads(raw)
 
 
-def watermarks_to_dict(marks: Any) -> dict[str, Any] | None:
-    if marks is None or not getattr(marks, "generation_id", ""):
-        # building may be empty; still surface numeric fields when present
-        if marks is None:
-            return None
-        if not marks.generation_id and marks.applied_sequence == 0 and marks.snapshot_documents == 0:
-            return None
-    return {
-        "generation_id": marks.generation_id,
-        "applied_sequence": marks.applied_sequence,
-        "committed_sequence": marks.committed_sequence,
-        "visible_sequence": marks.visible_sequence,
-        "snapshot_documents": marks.snapshot_documents,
-        "snapshot_complete": marks.snapshot_complete,
-    }
-
-
 def index_to_dict(index: api.IndexDescription) -> dict[str, Any]:
     definition = bson_to_python(index.desired_definition_bson)
     return {
         "index_id": index.index_id,
-        "collection_id": index.collection_id,
         "name": index.name,
         "type": INDEX_TYPE_NAMES.get(index.type, str(index.type)),
         "type_code": index.type,
         "desired_revision": index.desired_revision,
         "active_revision": index.active_revision,
         "lifecycle_state": index.lifecycle_state,
+        "generation_id": index.generation_id or None,
         "failure_message": index.failure_message or None,
         "definition": python_to_jsonable(definition) if definition is not None else None,
-        "live": watermarks_to_dict(index.live),
-        "building": watermarks_to_dict(index.building),
     }
 
 
-def collection_to_dict(collection: api.CollectionDescription) -> dict[str, Any]:
-    return {
-        "collection_id": collection.collection_id,
-        "database": collection.database,
-        "name": collection.name,
-        "accepted_sequence": collection.accepted_sequence,
+# Gauges and counters mongot labels per index generation. The odd label names
+# ("indexId logString") are what the process actually emits.
+_INDEX_STAT_FIELDS = {
+    "index.stats.numLuceneDocs": ("documents", "value"),
+    "index.stats.indexSizeBytes": ("size_bytes", "value"),
+    "index.stats.numFilesInIndex": ("files", "value"),
+    "index.stats.segment_count": ("segments", "value"),
+    "index.stats.query.totalQueries": ("queries", "count"),
+}
+
+
+def _metric_field(metric: Any, name: str) -> Any:
+    if isinstance(metric, dict):
+        return metric.get(name)
+    return getattr(metric, name, None)
+
+
+def _label(labels: dict[str, Any], *names: str) -> str | None:
+    for name in names:
+        value = labels.get(name)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _whole_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else value
+
+
+def index_stats_by_id(indexes: list[dict[str, Any]], metrics: Any) -> dict[str, dict[str, Any]]:
+    """Sum live-generation index gauges so the UI can show docs, size, and similar."""
+    preferred = {
+        index["index_id"]: str(index.get("generation_id") or "")
+        for index in indexes
+        if index.get("index_id")
     }
+    totals: dict[tuple[str, str, str], float] = {}
+    seen_generations: dict[str, set[str]] = {}
+
+    for metric in metrics:
+        spec = _INDEX_STAT_FIELDS.get(_metric_field(metric, "name"))
+        if spec is None:
+            continue
+        field, measurement = spec
+        labels = dict(_metric_field(metric, "labels") or {})
+        measurements = dict(_metric_field(metric, "measurements") or {})
+        index_id = _label(labels, "indexId logString", "indexId")
+        if not index_id:
+            continue
+        raw = _json_safe_number(measurements.get(measurement))
+        if not isinstance(raw, (int, float)):
+            continue
+        generation = _label(labels, "generationId logString", "generationId") or ""
+        key = (index_id, generation, field)
+        totals[key] = totals.get(key, 0.0) + float(raw)
+        seen_generations.setdefault(index_id, set()).add(generation)
+
+    stats: dict[str, dict[str, Any]] = {}
+    fields = {field for field, _measurement in _INDEX_STAT_FIELDS.values()}
+    for index_id, generation in preferred.items():
+        generations = seen_generations.get(index_id) or set()
+        chosen = generation if generation in generations else ""
+        if chosen == "" and len(generations) == 1:
+            chosen = next(iter(generations))
+        row = {field: None for field in fields}
+        for field in fields:
+            value = totals.get((index_id, chosen, field))
+            if value is not None:
+                row[field] = _whole_number(value)
+        stats[index_id] = row
+    return stats
+
+
+def attach_index_stats(indexes: list[dict[str, Any]], metrics: Any) -> list[dict[str, Any]]:
+    by_id = index_stats_by_id(indexes, metrics)
+    for index in indexes:
+        index["stats"] = by_id.get(
+            index.get("index_id"),
+            {field: None for field in {item[0] for item in _INDEX_STAT_FIELDS.values()}},
+        )
+    return indexes
 
 
 def _json_safe_number(value: Any) -> Any:
@@ -98,19 +153,13 @@ def _json_safe_mapping(mapping: Any) -> dict[str, Any]:
 
 def status_to_dict(status: api.ServiceStatus, *, include_metrics: bool = False) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "instance_id": status.instance_id,
         "management_ready": status.management_ready,
         "failure_message": status.failure_message or None,
-        "store_schema_version": status.store_schema_version,
-        "retry_retention_millis": status.retry_retention_millis,
-        "logical_log_bytes": status.logical_log_bytes,
-        "retry_requests": status.retry_requests,
-        "retention_pins": status.retention_pins,
-        "source_bytes": status.source_bytes,
-        "store_file_bytes": status.store_file_bytes,
-        "sqlite_wal_bytes": status.sqlite_wal_bytes,
         "free_disk_bytes": status.free_disk_bytes,
-        "indexes": [index_to_dict(idx) for idx in status.indexes],
+        "indexes": attach_index_stats(
+            [index_to_dict(idx) for idx in status.indexes],
+            status.metrics,
+        ),
         "metrics_count": len(status.metrics),
     }
     if include_metrics:

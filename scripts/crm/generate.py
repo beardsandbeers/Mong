@@ -1,17 +1,30 @@
-"""Generate fake CRM Accounts, Contacts, and Opportunities with relationship ids."""
+"""Deterministic, streaming fake CRM generator (Accounts, Contacts, Opportunities).
+
+Every document is a pure function of ``(seed, entity, account_index, child_index)``:
+
+- IDs are UUIDv5 values derived from those coordinates, so any entity can be
+  generated (or re-generated) on its own and still reference valid ids in the
+  other indexes. Re-running with the same seed upserts the same documents.
+- Each account owns a plan (contact count, opportunity count, opportunity ->
+  contact links) drawn from its own RNG streams, so no account depends on any
+  other and memory stays bounded by a single account's link table.
+"""
 
 from __future__ import annotations
 
-import argparse
-import json
+import hashlib
 import random
-from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid4
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterator, Sequence
 
 from faker import Faker
 
-fake = Faker()
+ENTITY_KEYS = ("accounts", "contacts", "opportunities")
+ID_NAMESPACE = uuid.UUID("6f1d3c2e-8b1a-4e57-9a43-2c6f0e7d9b10")
+DEFAULT_ANCHOR = datetime(2026, 1, 1, tzinfo=timezone.utc)
+MAX_CONTACTS_PER_OPPORTUNITY = 3
 
 ACCOUNT_TYPES = ("Customer", "Prospect", "Partner", "Reseller")
 ACCOUNT_STATUSES = ("Active", "Inactive", "On Hold")
@@ -61,210 +74,256 @@ STAGE_PROBABILITY = {
 }
 
 
-def _new_id() -> str:
-    return str(uuid4())
+def resolve_entities(entity: str) -> tuple[str, ...]:
+    if entity == "all":
+        return ENTITY_KEYS
+    if entity not in ENTITY_KEYS:
+        raise ValueError(f"Unknown entity: {entity}")
+    return (entity,)
+
+
+def _derive(seed: int, *parts: Any) -> int:
+    key = ":".join(str(part) for part in (seed, *parts)).encode()
+    return int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
+
+
+def account_id(seed: int, account: int) -> str:
+    return str(uuid.uuid5(ID_NAMESPACE, f"{seed}:account:{account}"))
+
+
+def contact_id(seed: int, account: int, contact: int) -> str:
+    return str(uuid.uuid5(ID_NAMESPACE, f"{seed}:contact:{account}:{contact}"))
+
+
+def opportunity_id(seed: int, account: int, opportunity: int) -> str:
+    return str(uuid.uuid5(ID_NAMESPACE, f"{seed}:opportunity:{account}:{opportunity}"))
 
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _address() -> dict[str, str]:
-    return {
-        "street": fake.street_address(),
-        "city": fake.city(),
-        "state": fake.state_abbr(),
-        "postal_code": fake.postcode(),
-        "country": fake.country_code(representation="alpha-2"),
-    }
+def _days_from(rng: random.Random, anchor: datetime, start_days: int, end_days: int) -> datetime:
+    """Random instant between anchor+start_days and anchor+end_days."""
+    return anchor + timedelta(seconds=rng.randint(start_days * 86_400, end_days * 86_400))
 
 
-def generate_account(*, seed: int | None = None) -> dict[str, Any]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
-
-    created = fake.date_time_between(start_date="-3y", end_date="-30d", tzinfo=timezone.utc)
-    updated = fake.date_time_between(start_date=created, end_date="now", tzinfo=timezone.utc)
-    company = fake.company()
-
-    return {
-        "_id": _new_id(),
-        "name": company,
-        "account_number": fake.bothify(text="ACC-######"),
-        "type": random.choice(ACCOUNT_TYPES),
-        "status": random.choice(ACCOUNT_STATUSES),
-        "industry": random.choice(INDUSTRIES),
-        "website": f"https://{fake.domain_name()}",
-        "phone": fake.phone_number(),
-        "annual_revenue": round(random.uniform(50_000, 50_000_000), 2),
-        "employee_count": random.randint(5, 25_000),
-        "billing_address": _address(),
-        "shipping_address": _address(),
-        "description": fake.catch_phrase(),
-        "owner_name": fake.name(),
-        "owner_email": fake.company_email(),
-        "created_at": _iso(created),
-        "updated_at": _iso(updated),
-    }
+def _between(rng: random.Random, start: datetime, end: datetime) -> datetime:
+    span = max(0, int((end - start).total_seconds()))
+    return start + timedelta(seconds=rng.randint(0, span))
 
 
-def generate_accounts(count: int = 10, *, seed: int | None = None) -> list[dict[str, Any]]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
-    return [generate_account() for _ in range(count)]
+@dataclass(frozen=True)
+class AccountPlan:
+    index: int
+    contact_count: int
+    opportunity_contacts: tuple[tuple[int, ...], ...]
+
+    @property
+    def opportunity_count(self) -> int:
+        return len(self.opportunity_contacts)
+
+    def contact_opportunities(self) -> list[list[int]]:
+        reverse: list[list[int]] = [[] for _ in range(self.contact_count)]
+        for opp, contacts in enumerate(self.opportunity_contacts):
+            for contact in contacts:
+                reverse[contact].append(opp)
+        return reverse
 
 
-def generate_contact(
-    *,
-    account_id: str,
-    opportunity_ids: list[str] | None = None,
-    seed: int | None = None,
-) -> dict[str, Any]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
+@dataclass(frozen=True)
+class CrmSpec:
+    seed: int
+    accounts: int
+    contacts_per_account: tuple[int, int] = (1, 4)
+    opportunities_per_account: tuple[int, int] = (0, 3)
+    start_account: int = 0
+    anchor: datetime = DEFAULT_ANCHOR
 
-    created = fake.date_time_between(start_date="-3y", end_date="-14d", tzinfo=timezone.utc)
-    updated = fake.date_time_between(start_date=created, end_date="now", tzinfo=timezone.utc)
-    first = fake.first_name()
-    last = fake.last_name()
+    def __post_init__(self) -> None:
+        for label, (lo, hi) in (
+            ("contacts_per_account", self.contacts_per_account),
+            ("opportunities_per_account", self.opportunities_per_account),
+        ):
+            if lo < 0 or lo > hi:
+                raise ValueError(f"{label} must satisfy 0 <= min <= max, got {(lo, hi)}")
+        if self.accounts < 0 or self.start_account < 0:
+            raise ValueError("accounts and start_account must be >= 0")
 
-    return {
-        "_id": _new_id(),
-        "account_id": account_id,
-        "opportunity_ids": list(opportunity_ids or []),
-        "first_name": first,
-        "last_name": last,
-        "full_name": f"{first} {last}",
-        "email": fake.company_email(),
-        "phone": fake.phone_number(),
-        "mobile": fake.phone_number(),
-        "title": fake.job(),
-        "department": random.choice(DEPARTMENTS),
-        "status": random.choice(CONTACT_STATUSES),
-        "mailing_address": _address(),
-        "is_primary": False,
-        "owner_name": fake.name(),
-        "owner_email": fake.company_email(),
-        "created_at": _iso(created),
-        "updated_at": _iso(updated),
-    }
+    @property
+    def account_range(self) -> range:
+        return range(self.start_account, self.start_account + self.accounts)
 
+    def counts(self, account: int) -> tuple[int, int]:
+        """(contact_count, opportunity_count); opportunities need at least one contact."""
+        rng = random.Random(_derive(self.seed, "counts", account))
+        contacts = rng.randint(*self.contacts_per_account)
+        opportunities = rng.randint(*self.opportunities_per_account)
+        return contacts, opportunities if contacts else 0
 
-def generate_contacts(
-    accounts: list[dict[str, Any]],
-    *,
-    per_account: tuple[int, int] = (1, 5),
-    seed: int | None = None,
-) -> list[dict[str, Any]]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
+    def plan(self, account: int) -> AccountPlan:
+        contacts, opportunities = self.counts(account)
+        rng = random.Random(_derive(self.seed, "links", account))
+        links: list[tuple[int, ...]] = []
+        for _ in range(opportunities):
+            k = rng.randint(1, min(contacts, MAX_CONTACTS_PER_OPPORTUNITY))
+            related = rng.sample(range(contacts), k)
+            if 0 in related:
+                related.remove(0)
+                related.insert(0, 0)
+            links.append(tuple(related))
+        return AccountPlan(account, contacts, tuple(links))
 
-    contacts: list[dict[str, Any]] = []
-    for account in accounts:
-        n = random.randint(per_account[0], per_account[1])
-        for i in range(n):
-            contact = generate_contact(account_id=account["_id"])
-            contact["is_primary"] = i == 0
-            contacts.append(contact)
-    return contacts
-
-
-def generate_opportunity(
-    *,
-    account_id: str,
-    contact_ids: list[str],
-    primary_contact_id: str | None = None,
-    seed: int | None = None,
-) -> dict[str, Any]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
-
-    if not contact_ids:
-        raise ValueError("opportunity requires at least one contact_id")
-
-    created = fake.date_time_between(start_date="-2y", end_date="-7d", tzinfo=timezone.utc)
-    updated = fake.date_time_between(start_date=created, end_date="now", tzinfo=timezone.utc)
-    close_date = fake.date_time_between(start_date="-6m", end_date="+9m", tzinfo=timezone.utc)
-    stage = random.choice(OPPORTUNITY_STAGES)
-    amount = round(random.uniform(5_000, 2_500_000), 2)
-    primary = primary_contact_id or contact_ids[0]
-
-    return {
-        "_id": _new_id(),
-        "account_id": account_id,
-        "contact_ids": list(contact_ids),
-        "primary_contact_id": primary,
-        "name": f"{fake.bs().title()} — {fake.company_suffix()}",
-        "opportunity_number": fake.bothify(text="OPP-######"),
-        "stage": stage,
-        "probability": STAGE_PROBABILITY[stage],
-        "amount": amount,
-        "expected_revenue": round(amount * STAGE_PROBABILITY[stage] / 100, 2),
-        "type": random.choice(OPPORTUNITY_TYPES),
-        "close_date": _iso(close_date),
-        "description": fake.paragraph(nb_sentences=2),
-        "next_step": fake.sentence(nb_words=6),
-        "owner_name": fake.name(),
-        "owner_email": fake.company_email(),
-        "created_at": _iso(created),
-        "updated_at": _iso(updated),
-    }
+    def document_counts(self, entities: Sequence[str] = ENTITY_KEYS) -> dict[str, int]:
+        totals = {key: 0 for key in entities}
+        for account in self.account_range:
+            contacts, opportunities = self.counts(account)
+            if "accounts" in totals:
+                totals["accounts"] += 1
+            if "contacts" in totals:
+                totals["contacts"] += contacts
+            if "opportunities" in totals:
+                totals["opportunities"] += opportunities
+        return totals
 
 
-def generate_opportunities(
-    accounts: list[dict[str, Any]],
-    contacts: list[dict[str, Any]],
-    *,
-    per_account: tuple[int, int] = (0, 4),
-    seed: int | None = None,
-) -> list[dict[str, Any]]:
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
+class CrmGenerator:
+    def __init__(self, spec: CrmSpec, *, locale: str | None = None) -> None:
+        self.spec = spec
+        self.fake = Faker(locale) if locale else Faker()
 
-    contacts_by_account: dict[str, list[dict[str, Any]]] = {}
-    for contact in contacts:
-        contacts_by_account.setdefault(contact["account_id"], []).append(contact)
+    def _streams(self, *parts: Any) -> random.Random:
+        seed = _derive(self.spec.seed, *parts)
+        self.fake.seed_instance(seed)
+        return random.Random(seed)
 
-    opportunities: list[dict[str, Any]] = []
-    for account in accounts:
-        account_contacts = contacts_by_account.get(account["_id"], [])
-        if not account_contacts:
-            continue
-        n = random.randint(per_account[0], per_account[1])
-        for _ in range(n):
-            related = random.sample(
-                account_contacts,
-                k=min(len(account_contacts), random.randint(1, 3)),
-            )
-            contact_ids = [c["_id"] for c in related]
-            primary = next((c["_id"] for c in related if c.get("is_primary")), contact_ids[0])
-            opportunities.append(
-                generate_opportunity(
-                    account_id=account["_id"],
-                    contact_ids=contact_ids,
-                    primary_contact_id=primary,
-                )
-            )
-    return opportunities
+    def _address(self) -> dict[str, str]:
+        fake = self.fake
+        return {
+            "street": fake.street_address(),
+            "city": fake.city(),
+            "state": fake.state_abbr(),
+            "postal_code": fake.postcode(),
+            "country": fake.country_code(representation="alpha-2"),
+        }
 
+    def account(self, account: int) -> dict[str, Any]:
+        rng = self._streams("account", account)
+        fake = self.fake
+        anchor = self.spec.anchor
+        created = _days_from(rng, anchor, -3 * 365, -30)
+        updated = _between(rng, created, anchor)
+        return {
+            "_id": account_id(self.spec.seed, account),
+            "name": fake.company(),
+            "account_number": fake.bothify(text="ACC-######"),
+            "type": rng.choice(ACCOUNT_TYPES),
+            "status": rng.choice(ACCOUNT_STATUSES),
+            "industry": rng.choice(INDUSTRIES),
+            "website": f"https://{fake.domain_name()}",
+            "phone": fake.phone_number(),
+            "annual_revenue": round(rng.uniform(50_000, 50_000_000), 2),
+            "employee_count": rng.randint(5, 25_000),
+            "billing_address": self._address(),
+            "shipping_address": self._address(),
+            "description": fake.catch_phrase(),
+            "owner_name": fake.name(),
+            "owner_email": fake.company_email(),
+            "created_at": _iso(created),
+            "updated_at": _iso(updated),
+        }
 
-def _link_contacts_to_opportunities(
-    contacts: list[dict[str, Any]],
-    opportunities: list[dict[str, Any]],
-) -> None:
-    """Back-fill contact.opportunity_ids from opportunity.contact_ids."""
-    opp_ids_by_contact: dict[str, list[str]] = {}
-    for opp in opportunities:
-        for contact_id in opp["contact_ids"]:
-            opp_ids_by_contact.setdefault(contact_id, []).append(opp["_id"])
-    for contact in contacts:
-        contact["opportunity_ids"] = opp_ids_by_contact.get(contact["_id"], [])
+    def contact(self, account: int, contact: int, opportunity_indexes: Sequence[int]) -> dict[str, Any]:
+        rng = self._streams("contact", account, contact)
+        fake = self.fake
+        anchor = self.spec.anchor
+        seed = self.spec.seed
+        created = _days_from(rng, anchor, -3 * 365, -14)
+        updated = _between(rng, created, anchor)
+        first = fake.first_name()
+        last = fake.last_name()
+        return {
+            "_id": contact_id(seed, account, contact),
+            "account_id": account_id(seed, account),
+            "opportunity_ids": [opportunity_id(seed, account, opp) for opp in opportunity_indexes],
+            "first_name": first,
+            "last_name": last,
+            "full_name": f"{first} {last}",
+            "email": fake.company_email(),
+            "phone": fake.phone_number(),
+            "mobile": fake.phone_number(),
+            "title": fake.job(),
+            "department": rng.choice(DEPARTMENTS),
+            "status": rng.choice(CONTACT_STATUSES),
+            "mailing_address": self._address(),
+            "is_primary": contact == 0,
+            "owner_name": fake.name(),
+            "owner_email": fake.company_email(),
+            "created_at": _iso(created),
+            "updated_at": _iso(updated),
+        }
+
+    def opportunity(self, account: int, opportunity: int, contact_indexes: Sequence[int]) -> dict[str, Any]:
+        if not contact_indexes:
+            raise ValueError("opportunity requires at least one contact")
+        rng = self._streams("opportunity", account, opportunity)
+        fake = self.fake
+        anchor = self.spec.anchor
+        seed = self.spec.seed
+        created = _days_from(rng, anchor, -2 * 365, -7)
+        updated = _between(rng, created, anchor)
+        close_date = _days_from(rng, anchor, -182, 273)
+        stage = rng.choice(OPPORTUNITY_STAGES)
+        amount = round(rng.uniform(5_000, 2_500_000), 2)
+        contact_ids = [contact_id(seed, account, c) for c in contact_indexes]
+        return {
+            "_id": opportunity_id(seed, account, opportunity),
+            "account_id": account_id(seed, account),
+            "contact_ids": contact_ids,
+            "primary_contact_id": contact_ids[0],
+            "name": f"{fake.bs().title()} — {fake.company_suffix()}",
+            "opportunity_number": fake.bothify(text="OPP-######"),
+            "stage": stage,
+            "probability": STAGE_PROBABILITY[stage],
+            "amount": amount,
+            "expected_revenue": round(amount * STAGE_PROBABILITY[stage] / 100, 2),
+            "type": rng.choice(OPPORTUNITY_TYPES),
+            "close_date": _iso(close_date),
+            "description": fake.paragraph(nb_sentences=2),
+            "next_step": fake.sentence(nb_words=6),
+            "owner_name": fake.name(),
+            "owner_email": fake.company_email(),
+            "created_at": _iso(created),
+            "updated_at": _iso(updated),
+        }
+
+    def iter_account(
+        self,
+        account: int,
+        entities: Sequence[str] = ENTITY_KEYS,
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        """Yield (entity, document) for one account; documents are built lazily."""
+        if "accounts" in entities:
+            yield "accounts", self.account(account)
+        if "contacts" not in entities and "opportunities" not in entities:
+            return
+        plan = self.spec.plan(account)
+        if "contacts" in entities:
+            reverse = plan.contact_opportunities()
+            for contact in range(plan.contact_count):
+                yield "contacts", self.contact(account, contact, reverse[contact])
+        if "opportunities" in entities:
+            for opp, contacts in enumerate(plan.opportunity_contacts):
+                yield "opportunities", self.opportunity(account, opp, contacts)
+
+    def iter_documents(
+        self,
+        entities: Sequence[str] = ENTITY_KEYS,
+    ) -> Iterator[tuple[int, str, dict[str, Any]]]:
+        """Yield (account_index, entity, document) across the spec's account range."""
+        for account in self.spec.account_range:
+            for entity, document in self.iter_account(account, entities):
+                yield account, entity, document
 
 
 def generate_crm_dataset(
@@ -272,88 +331,16 @@ def generate_crm_dataset(
     account_count: int = 10,
     contacts_per_account: tuple[int, int] = (1, 5),
     opportunities_per_account: tuple[int, int] = (0, 4),
-    seed: int | None = None,
+    seed: int = 0,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Generate a linked CRM dataset (in memory only — nothing is stored)."""
-    if seed is not None:
-        Faker.seed(seed)
-        random.seed(seed)
-
-    accounts = generate_accounts(account_count)
-    contacts = generate_contacts(accounts, per_account=contacts_per_account)
-    opportunities = generate_opportunities(
-        accounts,
-        contacts,
-        per_account=opportunities_per_account,
+    """Collect a small dataset in memory (tests / quick inspection only)."""
+    spec = CrmSpec(
+        seed=seed,
+        accounts=account_count,
+        contacts_per_account=contacts_per_account,
+        opportunities_per_account=opportunities_per_account,
     )
-    _link_contacts_to_opportunities(contacts, opportunities)
-    return {
-        "accounts": accounts,
-        "contacts": contacts,
-        "opportunities": opportunities,
-    }
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate fake CRM Accounts, Contacts, and Opportunities (no storage).",
-    )
-    parser.add_argument("--accounts", type=int, default=5, help="Number of accounts (default: 5)")
-    parser.add_argument(
-        "--contacts-min",
-        type=int,
-        default=1,
-        help="Min contacts per account (default: 1)",
-    )
-    parser.add_argument(
-        "--contacts-max",
-        type=int,
-        default=4,
-        help="Max contacts per account (default: 4)",
-    )
-    parser.add_argument(
-        "--opportunities-min",
-        type=int,
-        default=0,
-        help="Min opportunities per account (default: 0)",
-    )
-    parser.add_argument(
-        "--opportunities-max",
-        type=int,
-        default=3,
-        help="Max opportunities per account (default: 3)",
-    )
-    parser.add_argument("--seed", type=int, default=None, help="RNG seed for reproducibility")
-    parser.add_argument(
-        "--entity",
-        choices=("all", "accounts", "contacts", "opportunities"),
-        default="all",
-        help="Which entity set to print (default: all)",
-    )
-    args = parser.parse_args(argv)
-
-    if args.contacts_min > args.contacts_max:
-        parser.error("--contacts-min cannot exceed --contacts-max")
-    if args.opportunities_min > args.opportunities_max:
-        parser.error("--opportunities-min cannot exceed --opportunities-max")
-
-    dataset = generate_crm_dataset(
-        account_count=args.accounts,
-        contacts_per_account=(args.contacts_min, args.contacts_max),
-        opportunities_per_account=(args.opportunities_min, args.opportunities_max),
-        seed=args.seed,
-    )
-
-    if args.entity == "all":
-        payload: Any = {
-            "counts": {k: len(v) for k, v in dataset.items()},
-            **dataset,
-        }
-    else:
-        payload = dataset[args.entity]
-
-    print(json.dumps(payload, indent=2))
-
-
-if __name__ == "__main__":
-    main()
+    dataset: dict[str, list[dict[str, Any]]] = {key: [] for key in ENTITY_KEYS}
+    for _, entity, document in CrmGenerator(spec).iter_documents():
+        dataset[entity].append(document)
+    return dataset
