@@ -7,7 +7,7 @@ import {
   MQL_OPERATORS,
   specFor,
 } from "./catalog.js";
-import { readJson, syntaxDiagnostic } from "./context.js";
+import { effectiveIndexNameFromDoc, readJson, syntaxDiagnostic } from "./context.js";
 import { canonicalTypes, fieldsFor, typesCompatible } from "./fields.js";
 
 function diag(from, to, severity, message) {
@@ -175,7 +175,7 @@ function lintFilterField(path, from, to, fields, diags) {
   }
 }
 
-function lintMqlValue(obj, mode, path, model, fields, diags) {
+function lintMqlValue(obj, mode, path, model, fields, diags, doc, localIndexName) {
   for (const prop of obj.properties) {
     const spec = MQL_OPERATORS[prop.key];
     if (!spec) {
@@ -190,26 +190,26 @@ function lintMqlValue(obj, mode, path, model, fields, diags) {
       diags.push(diag(value.from, value.to, "error", `"${prop.key}" must be a boolean`));
     } else if (spec.value === "clause") {
       if (value.kind !== "object") diags.push(diag(value.from, value.to, "error", `"${prop.key}" must be an object`));
-      else lintNode(value, mode, path.concat(prop.key), model, fields, diags);
+      else lintNode(value, mode, path.concat(prop.key), model, fields, diags, doc, localIndexName);
     } else if (spec.value === "scalar" && (value.kind === "object" || value.kind === "array")) {
       diags.push(diag(value.from, value.to, "error", `"${prop.key}" must be a single value`));
     }
   }
 }
 
-function lintMql(obj, mode, path, model, fields, diags) {
+function lintMql(obj, mode, path, model, fields, diags, doc, localIndexName) {
   for (const prop of obj.properties) {
     if (MQL_COMPOUND[prop.key]) {
       const value = prop.value;
       if (prop.key === "$not") {
         if (value?.kind !== "object") diags.push(diag(prop.keyFrom, prop.keyTo, "error", '"$not" must be an object'));
-        else lintNode(value, mode, path.concat(prop.key), model, fields, diags);
+        else lintNode(value, mode, path.concat(prop.key), model, fields, diags, doc, localIndexName);
       } else if (value?.kind !== "array") {
         diags.push(diag(prop.keyFrom, prop.keyTo, "error", `"${prop.key}" must be an array of clauses`));
       } else {
         value.items.forEach((item, index) => {
           if (item.kind !== "object") diags.push(diag(item.from, item.to, "error", `"${prop.key}" clauses must be objects`));
-          else lintNode(item, mode, path.concat(prop.key, index), model, fields, diags);
+          else lintNode(item, mode, path.concat(prop.key, index), model, fields, diags, doc, localIndexName);
         });
       }
       continue;
@@ -219,21 +219,27 @@ function lintMql(obj, mode, path, model, fields, diags) {
       continue;
     }
     lintFilterField(prop.key, prop.keyFrom, prop.keyTo, fields, diags);
-    if (prop.value?.kind === "object") lintMqlValue(prop.value, mode, path.concat(prop.key), model, fields, diags);
-    else if (prop.value?.kind === "array") {
+    if (prop.value?.kind === "object") {
+      lintMqlValue(prop.value, mode, path.concat(prop.key), model, fields, diags, doc, localIndexName);
+    } else if (prop.value?.kind === "array") {
       diags.push(diag(prop.value.from, prop.value.to, "error", `Use $in to match a list of values for "${prop.key}"`));
     }
   }
 }
 
-function lintObject(obj, schema, mode, path, model, fields, diags) {
+function resolveFields(model, doc, localIndexName, path, key = null) {
+  const name = effectiveIndexNameFromDoc(doc, path, key, localIndexName);
+  return fieldsFor(model, name).fields;
+}
+
+function lintObject(obj, schema, mode, path, model, fields, diags, doc, localIndexName) {
   if (!schema || schema.role === "unknown" || obj.kind !== "object") return;
   if (schema.role === "mql") {
-    lintMql(obj, mode, path, model, fields, diags);
+    lintMql(obj, mode, path, model, fields, diags, doc, localIndexName);
     return;
   }
   if (schema.role === "mql-value") {
-    lintMqlValue(obj, mode, path, model, fields, diags);
+    lintMqlValue(obj, mode, path, model, fields, diags, doc, localIndexName);
     return;
   }
   const seen = new Set();
@@ -251,26 +257,42 @@ function lintObject(obj, schema, mode, path, model, fields, diags) {
         diags.push(diag(prop.keyFrom, prop.keyTo, "error", "Only one operator or collector is allowed"));
       }
       if (schema.filterOperators && schema.acceptsOperators && !schema.filterOperators.includes(prop.key)) {
-        diags.push(diag(prop.keyFrom, prop.keyTo, "error", `"${prop.key}" cannot be used in a vector filter`));
+        const hint = prop.key === "join"
+          ? "join is only allowed in compound.filter or compound.mustNot"
+          : `"${prop.key}" is not allowed here`;
+        diags.push(diag(prop.keyFrom, prop.keyTo, "error", hint));
       }
     }
 
     const spec = specFor(schema, prop.key);
+    const propFields = resolveFields(model, doc, localIndexName, path, prop.key);
     if (clause && !spec) {
       if (!prop.value || prop.value.kind !== "object") {
         diags.push(diag(prop.keyFrom, prop.keyTo, "error", `Expected an object for "${prop.key}"`));
       } else {
-        lintNode(prop.value, mode, path.concat(prop.key), model, fields, diags);
+        lintNode(prop.value, mode, path.concat(prop.key), model, propFields, diags, doc, localIndexName);
       }
       continue;
     }
     if (!spec) {
+      if (prop.key === "join") {
+        diags.push(diag(
+          prop.keyFrom,
+          prop.keyTo,
+          "error",
+          "join is only allowed in compound.filter or compound.mustNot",
+        ));
+        if (prop.value?.kind === "object") {
+          lintNode(prop.value, mode, path.concat(prop.key), model, propFields, diags, doc, localIndexName);
+        }
+        continue;
+      }
       if (!schema.loose && !schema.freeform) {
         diags.push(diag(prop.keyFrom, prop.keyTo, "error", `Unknown key "${prop.key}"`));
       }
       continue;
     }
-    lintProperty(prop, spec, schema, mode, path, model, fields, diags);
+    lintProperty(prop, spec, schema, mode, path, model, propFields, diags, doc, localIndexName);
   }
 
   for (const [key, spec] of Object.entries(schema.keySpecs || {})) {
@@ -292,7 +314,7 @@ function lintObject(obj, schema, mode, path, model, fields, diags) {
   if (schema.operator === "vectorSearch") lintVectorBounds(obj, fields, diags, "path", "queryVector");
 }
 
-function lintProperty(prop, spec, schema, mode, path, model, fields, diags) {
+function lintProperty(prop, spec, schema, mode, path, model, fields, diags, doc, localIndexName) {
   const value = prop.value;
   if (!value) {
     diags.push(diag(prop.keyFrom, prop.keyTo, "error", `Missing value for "${prop.key}"`));
@@ -305,7 +327,7 @@ function lintProperty(prop, spec, schema, mode, path, model, fields, diags) {
 
   if (spec.kind === "index" && value.kind === "string") {
     const found = (model?.indexes || []).find((index) => index.name === value.value);
-    const wanted = indexModeType(mode);
+    const wanted = spec.indexType || indexModeType(mode);
     if (!found) diags.push(diag(value.from, value.to, "error", `Unknown index "${value.value}"`));
     else if (found.type !== wanted) {
       diags.push(diag(value.from, value.to, "error", `Index "${value.value}" is ${found.type}, not ${wanted}`));
@@ -326,7 +348,9 @@ function lintProperty(prop, spec, schema, mode, path, model, fields, diags) {
         else diags.push(diag(item.from, item.to, "error", `"${prop.key}" must be a string or array of strings`));
       }
     }
-    if (value.kind === "object") lintNode(value, mode, path.concat(prop.key), model, fields, diags);
+    if (value.kind === "object") {
+      lintNode(value, mode, path.concat(prop.key), model, fields, diags, doc, localIndexName);
+    }
     return;
   }
 
@@ -339,16 +363,21 @@ function lintProperty(prop, spec, schema, mode, path, model, fields, diags) {
   }
 
   if (value.kind === "object" || value.kind === "array") {
-    lintNode(value, mode, path.concat(prop.key), model, fields, diags);
+    lintNode(value, mode, path.concat(prop.key), model, fields, diags, doc, localIndexName);
   }
 }
 
-function lintNode(node, mode, path, model, fields, diags) {
+function lintNode(node, mode, path, model, fields, diags, doc, localIndexName) {
   if (!node) return;
   const schema = locate(mode, path);
-  if (node.kind === "object") lintObject(node, schema, mode, path, model, fields, diags);
+  const nodeFields = resolveFields(model, doc, localIndexName, path) || fields;
+  if (node.kind === "object") {
+    lintObject(node, schema, mode, path, model, nodeFields, diags, doc, localIndexName);
+  }
   if (node.kind === "array" && schema.role === "array") {
-    node.items.forEach((item, index) => lintNode(item, mode, path.concat(index), model, fields, diags));
+    node.items.forEach((item, index) => {
+      lintNode(item, mode, path.concat(index), model, nodeFields, diags, doc, localIndexName);
+    });
   }
 }
 
@@ -373,6 +402,6 @@ export function lintQuery(state, model) {
   const indexName = doc.properties.find((item) => item.key === "index" && item.value?.kind === "string")?.value.value || null;
   const { fields } = fieldsFor(model, indexName);
   const diags = [];
-  lintNode(doc, mode, [], model, fields, diags);
+  lintNode(doc, mode, [], model, fields, diags, doc, indexName);
   return diags;
 }

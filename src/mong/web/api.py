@@ -192,12 +192,42 @@ def delete_document(index_id: str, document_id: str):
         return _from_rpc(exc)
 
 
+@api_bp.post("/indexes/<index_id>/delete-by-query")
+def delete_by_query(index_id: str):
+    body = request.get_json(silent=True) or {}
+    match_all = bool(body.get("match_all"))
+    query = None if match_all else body.get("query")
+    if not match_all and not isinstance(query, dict):
+        return _error("query must be an object")
+    try:
+        max_matches = int(body.get("max_matches") or 0)
+    except (TypeError, ValueError):
+        return _error("max_matches must be an integer")
+    try:
+        result = service.delete_by_query(
+            index_id,
+            query=query,
+            vector=bool(body.get("vector")),
+            match_all=match_all,
+            dry_run=bool(body.get("dry_run", True)),
+            max_matches=max_matches,
+            concern=body.get("concern") or "visible",
+            generation_id=body.get("generation_id") or "",
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
 @api_bp.post("/indexes/<index_id>/search")
 def search(index_id: str):
     body = request.get_json(silent=True) or {}
     query = body.get("query")
     if not isinstance(query, dict):
         return _error("query must be an object")
+    explain = body.get("explain") or ""
+    if not isinstance(explain, str):
+        return _error("explain must be a string")
     try:
         result = service.search(
             index_id,
@@ -208,6 +238,7 @@ def search(index_id: str):
             drain=bool(body.get("drain")),
             max_batches=int(body.get("max_batches") or 20),
             generation_id=body.get("generation_id") or "",
+            explain=explain,
         )
         return jsonify(result)
     except Exception as exc:

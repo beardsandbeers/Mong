@@ -62,6 +62,34 @@ def test_search_strips_editor_index_key(monkeypatch) -> None:
     assert seen["query"]["text"]["path"] == "title"
 
 
+def test_search_reports_round_trip_latency(monkeypatch) -> None:
+    class _Response:
+        batch_bson = b""
+        metadata_bson = b""
+        cursor_id = 0
+        generation_id = ""
+
+    class _Client:
+        def search(self, request):
+            return _Response()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("mong.service.encode_bson", lambda document: b"")
+    monkeypatch.setattr("mong.service.create_client", lambda: _Client())
+
+    from mong.service import MongotService
+
+    result = MongotService().search("idx-1", {"text": {"path": "title", "query": "coffee"}})
+
+    assert isinstance(result["latency_ms"], float)
+    assert result["latency_ms"] >= 0
+
+
 def test_field_stats_polls_without_repeating_refresh(monkeypatch) -> None:
     from mongot_standalone import api
 
@@ -153,3 +181,123 @@ def test_stats_routes_pass_query_args(monkeypatch) -> None:
     response = client.get("/api/indexes/idx-1/mappings?generation_id=g")
     assert response.get_json()["definition"]["mappings"]["dynamic"] is False
     assert calls["mappings"] == ("idx-1", {"generation_id": "g"})
+
+
+def test_search_forwards_explain_and_decodes_plan(monkeypatch) -> None:
+    from mongot_standalone import api, encode_bson
+
+    seen = {}
+
+    class _Response:
+        batch_bson = encode_bson({"results": []})
+        metadata_bson = b""
+        explain_bson = encode_bson({"query": {"type": "TermQuery"}})
+        cursor_id = 0
+        generation_id = "gen"
+
+    class _Client:
+        def search(self, request):
+            seen["verbosity"] = request.explain_verbosity
+            return _Response()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("mong.service.create_client", lambda: _Client())
+
+    from mong.service import MongotService
+
+    result = MongotService().search(
+        "idx-1",
+        {"text": {"path": "title", "query": "coffee"}},
+        explain="executionStats",
+    )
+
+    assert seen["verbosity"] == api.EXPLAIN_VERBOSITY_EXECUTION_STATS
+    assert result["explain"]["query"]["type"] == "TermQuery"
+    assert result["explain_verbosity"] == "execution_stats"
+    assert result["count"] == 0
+
+
+def test_delete_by_query_strips_editor_index_and_stays_a_dry_run(monkeypatch) -> None:
+    seen = {}
+
+    class _Response:
+        index_id = "idx-1"
+        generation_id = "gen"
+        active_revision = 4
+        matched_count = 2
+        processed_count = 0
+        dry_run = True
+
+    class _Index:
+        def delete_by_query(self, predicate, **kwargs):
+            seen["predicate"] = predicate
+            seen["kwargs"] = kwargs
+            return _Response()
+
+    class _Client:
+        def index(self, index_id):
+            seen["index_id"] = index_id
+            return _Index()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("mong.service.create_client", lambda: _Client())
+
+    from mong.service import MongotService
+
+    result = MongotService().delete_by_query(
+        "idx-1",
+        query={"index": "articles", "text": {"path": "title", "query": "coffee"}},
+        dry_run=True,
+        max_matches=25,
+    )
+
+    assert seen["index_id"] == "idx-1"
+    assert "index" not in seen["predicate"]
+    assert seen["predicate"]["text"]["query"] == "coffee"
+    assert seen["kwargs"]["vector"] is False
+    assert seen["kwargs"]["match_all"] is False
+    assert seen["kwargs"]["dry_run"] is True
+    assert seen["kwargs"]["max_matches"] == 25
+    assert result["matched_count"] == 2
+    assert result["processed_count"] == 0
+    assert result["dry_run"] is True
+
+
+def test_delete_by_query_route_defaults_to_dry_run(monkeypatch) -> None:
+    from mong.web import api as web_api
+
+    calls = {}
+
+    def fake_delete(index_id, **kwargs):
+        calls["args"] = (index_id, kwargs)
+        return {"matched_count": 1, "processed_count": 0, "dry_run": True}
+
+    monkeypatch.setattr(web_api.service, "delete_by_query", fake_delete)
+    client = create_app().test_client()
+    response = client.post(
+        "/api/indexes/idx-1/delete-by-query",
+        json={"query": {"text": {"path": "title", "query": "coffee"}}},
+    )
+
+    assert response.status_code == 200
+    assert calls["args"][0] == "idx-1"
+    assert calls["args"][1]["dry_run"] is True
+    assert calls["args"][1]["match_all"] is False
+    assert calls["args"][1]["vector"] is False
+    assert response.get_json()["matched_count"] == 1
+
+    rejected = client.post(
+        "/api/indexes/idx-1/search",
+        json={"query": {"exists": {"path": "_id"}}, "explain": 1},
+    )
+    assert rejected.status_code == 400

@@ -209,11 +209,86 @@ function propertyOwning(node, pos) {
   return null;
 }
 
+function fragmentAt(doc, node, pos) {
+  const raw = doc.sliceString(node.from, node.to);
+  const cursor = Math.min(Math.max(pos, node.from), node.to);
+  if (raw.startsWith('"')) {
+    const contentFrom = node.from + 1;
+    const end = Math.max(contentFrom, cursor);
+    return {
+      enclose: "quotes",
+      unclosed: true,
+      partial: doc.sliceString(contentFrom, end),
+      from: contentFrom,
+      to: end,
+      tokenFrom: node.from,
+      tokenTo: node.to,
+      nameFrom: node.from,
+      nameTo: node.to,
+    };
+  }
+  const partial = doc.sliceString(node.from, cursor);
+  if (!partial || !/^[\w$.-]+$/.test(partial)) return null;
+  return {
+    enclose: "bare",
+    unclosed: false,
+    partial,
+    from: node.from,
+    to: cursor,
+    tokenFrom: node.from,
+    tokenTo: node.to,
+    nameFrom: node.from,
+    nameTo: node.to,
+  };
+}
+
+// Lezer drops an unclosed `"com` into an error node, which used to look like
+// an empty spot and shut completion off until the closing quote existed.
+function syntaxErrorContext(node, doc, pos) {
+  const fragment = fragmentAt(doc, node, pos);
+  if (!fragment) return null;
+  let current = node.parent;
+  while (current) {
+    if (current.name === "Property") {
+      const colon = childNamed(current, ":");
+      const name = childNamed(current, "PropertyName");
+      if (colon && pos >= colon.to && node.from >= colon.to) {
+        const objectNode = current.parent?.name === "Object" ? current.parent : null;
+        return {
+          kind: "value",
+          objectPath: objectNode ? objectPath(objectNode, doc) : [],
+          key: name ? decodeString(textOf(doc, name)) : "",
+          existingKeys: objectNode ? objectKeys(objectNode, doc) : [],
+          locals: objectNode ? stringProps(objectNode, doc) : {},
+          hasColon: true,
+          hasValue: true,
+          containerFrom: objectNode?.from ?? current.from,
+          containerTo: objectNode?.to ?? current.to,
+          colonTo: colon.to,
+          ...fragment,
+        };
+      }
+    }
+    if (current.name === "Array") {
+      return { ...elementContext(current, doc, pos), ...fragment, kind: "element" };
+    }
+    if (current.name === "Object") {
+      return { ...bareKeyContext(current, doc, pos), ...fragment, kind: "key" };
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
 /** Where the cursor sits in the JSON: a key, a value, or an array element. */
 export function contextAt(state, pos) {
   const doc = state.doc;
   const node = syntaxTree(state).resolveInner(pos, -1);
   if (!node) return null;
+  if (node.name === "⚠") {
+    const recovered = syntaxErrorContext(node, doc, pos);
+    if (recovered) return recovered;
+  }
 
   const propertyName = node.name === "PropertyName"
     ? node
@@ -303,10 +378,60 @@ export function rootIndexName(state) {
   return prop ? prop.value.value : null;
 }
 
-export function syntaxDiagnostic(state) {
+function childAt(node, part) {
+  if (!node) return null;
+  if (typeof part === "number") return node.kind === "array" ? node.items[part] : null;
+  if (node.kind !== "object") return null;
+  return node.properties.find((item) => item.key === part)?.value || null;
+}
+
+/** Nearest `join` object on `objectPath`, if any. */
+export function joinObjectAt(doc, objectPath) {
+  if (!doc) return null;
+  let node = doc;
+  let joinNode = null;
+  for (const part of objectPath || []) {
+    node = childAt(node, part);
+    if (!node) return joinNode;
+    if (part === "join" && node.kind === "object") joinNode = node;
+  }
+  return joinNode;
+}
+
+/**
+ * Index name for field completion/lint at this path.
+ * Inside join.foreignField or join.operator, use `from` (or the local index when omitted).
+ */
+export function effectiveIndexNameFromDoc(doc, objectPath, key = null, localName = null) {
+  const joinNode = joinObjectAt(doc, objectPath);
+  if (!joinNode) return localName;
+  const rest = [];
+  let seenJoin = false;
+  for (const part of objectPath || []) {
+    if (part === "join") {
+      seenJoin = true;
+      rest.length = 0;
+      continue;
+    }
+    if (seenJoin) rest.push(part);
+  }
+  const underForeign = key === "foreignField"
+    || key === "operator"
+    || rest[0] === "foreignField"
+    || rest[0] === "operator";
+  if (!underForeign) return localName;
+  const from = joinNode.properties.find((item) => item.key === "from" && item.value?.kind === "string");
+  return from ? from.value.value : localName;
+}
+
+export function effectiveIndexName(state, objectPath, key = null) {
+  return effectiveIndexNameFromDoc(readJson(state), objectPath, key, rootIndexName(state));
+}
+
+export function syntaxDiagnostic(state, message = "Query must be valid JSON") {
   const text = state.doc.toString();
   if (!text.trim()) {
-    return [{ from: 0, to: 0, severity: "error", message: "Query must be valid JSON" }];
+    return [{ from: 0, to: 0, severity: "error", message }];
   }
   try {
     JSON.parse(text);
@@ -318,7 +443,7 @@ export function syntaxDiagnostic(state) {
       from: pos,
       to: Math.min(pos + 1, Math.max(text.length, 1)),
       severity: "error",
-      message: "Query must be valid JSON",
+      message,
     }];
   }
 }

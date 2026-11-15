@@ -1,39 +1,7 @@
-import {
-  EditorState,
-  EditorView,
-  Prec,
-  StateEffect,
-  StateField,
-  autocompletion,
-  bracketMatching,
-  closeBrackets,
-  closeBracketsKeymap,
-  completionKeymap,
-  defaultHighlightStyle,
-  defaultKeymap,
-  drawSelection,
-  dropCursor,
-  foldGutter,
-  foldKeymap,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  highlightSpecialChars,
-  history,
-  historyKeymap,
-  indentOnInput,
-  indentUnit,
-  indentWithTab,
-  json,
-  keymap,
-  lineNumbers,
-  lintGutter,
-  lintKeymap,
-  linter,
-  placeholder,
-  syntaxHighlighting,
-} from "../../vendor/codemirror.js";
+import { StateEffect, StateField } from "../../vendor/codemirror.js";
 import { queryCompletionSource } from "./complete.js";
 import { loadMappings } from "./fields.js";
+import { createJsonEditor, formatJson, renderStatus } from "./json-editor.js";
 import { lintQuery } from "./lint.js";
 
 const setModel = StateEffect.define();
@@ -47,37 +15,6 @@ const modelField = StateField.define({
     }
     return next;
   },
-});
-
-const theme = EditorView.theme({
-  "&": {
-    fontSize: "0.86rem",
-    fontFamily: "var(--font-mono), ui-monospace, monospace",
-    border: "1px solid var(--line)",
-    borderRadius: "10px",
-    backgroundColor: "#fbfcfd",
-  },
-  "&.cm-focused": {
-    outline: "2px solid var(--accent-soft)",
-    outlineOffset: "1px",
-  },
-  ".cm-scroller": {
-    fontFamily: "inherit",
-    minHeight: "110px",
-  },
-  ".cm-content": {
-    padding: "8px 0",
-    minHeight: "110px",
-  },
-  ".cm-gutters": {
-    backgroundColor: "#f4f7f8",
-    color: "var(--muted)",
-    border: "none",
-    borderRight: "1px solid var(--line)",
-    borderRadius: "10px 0 0 10px",
-  },
-  ".cm-activeLine": { backgroundColor: "rgba(15, 138, 122, 0.05)" },
-  ".cm-tooltip": { zIndex: "40" },
 });
 
 function emptyModel() {
@@ -98,6 +35,7 @@ export class MongQueryEditor extends HTMLElement {
     this._mappingFlight = "";
     this._status = null;
     this._resize = null;
+    this._label = null;
   }
 
   static get observedAttributes() {
@@ -111,79 +49,52 @@ export class MongQueryEditor extends HTMLElement {
   connectedCallback() {
     if (!this._view) this._mount();
     this._resize?.observe(this);
+    this._bindLabel();
   }
 
   disconnectedCallback() {
     this._resize?.disconnect();
+    if (this._label && this._focusFromLabel) {
+      this._label.removeEventListener("click", this._focusFromLabel);
+    }
+    this._label = null;
   }
 
   _mount() {
     this.classList.add("query-editor-host");
     const host = this;
-    this._status = document.createElement("p");
-    this._status.className = "query-editor__status";
-    this._view = new EditorView({
+    const created = createJsonEditor({
       parent: this,
-      state: EditorState.create({
-        doc: this._pendingValue ?? "",
-        extensions: [
-          modelField,
-          lineNumbers(),
-          highlightActiveLineGutter(),
-          highlightSpecialChars(),
-          history(),
-          foldGutter(),
-          drawSelection(),
-          dropCursor(),
-          indentOnInput(),
-          indentUnit.of("  "),
-          EditorState.tabSize.of(2),
-          bracketMatching(),
-          closeBrackets(),
-          autocompletion({
-            override: [queryCompletionSource((context) => context.state.field(modelField))],
-            activateOnTyping: true,
-            maxRenderedOptions: 60,
-          }),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-          highlightActiveLine(),
-          json(),
-          lintGutter(),
-          linter((view) => lintQuery(view.state, view.state.field(modelField)), { delay: 150 }),
-          EditorView.lineWrapping,
-          placeholder("Ctrl+Space completes operators, fields, and index names"),
-          EditorView.contentAttributes.of({ "aria-label": "Query expression JSON" }),
-          Prec.high(keymap.of([
-            {
-              key: "Mod-Enter",
-              run() {
-                host.dispatchEvent(new CustomEvent("run", { bubbles: true }));
-                return true;
-              },
-            },
-          ])),
-          keymap.of([
-            ...closeBracketsKeymap,
-            ...completionKeymap,
-            ...lintKeymap,
-            ...defaultKeymap,
-            ...historyKeymap,
-            ...foldKeymap,
-            indentWithTab,
-          ]),
-          theme,
-          EditorView.updateListener.of((update) => {
-            if (host._silence || !update.docChanged) return;
-            host.dispatchEvent(new Event("input", { bubbles: true }));
-            host._emitIndexChange();
-            host._renderStatus();
-          }),
-        ],
-      }),
+      doc: this._pendingValue ?? "",
+      extensions: [modelField],
+      completionSource: queryCompletionSource((context) => context.state.field(modelField)),
+      lintSource: (view) => lintQuery(view.state, view.state.field(modelField)),
+      lintNeedsRefresh: (update) => update.transactions.some(
+        (tr) => tr.effects.some((effect) => effect.is(setModel)),
+      ),
+      placeholder: "Ctrl+Space completes operators, fields, and index names",
+      ariaLabel: "Query expression JSON",
+      onRun: () => {
+        host.dispatchEvent(new CustomEvent("run", { bubbles: true }));
+      },
+      onFormat: () => {
+        host.indent();
+      },
+      onDocChange: () => {
+        if (host._silence) return;
+        host.dispatchEvent(new Event("input", { bubbles: true }));
+        host._emitIndexChange();
+        host._renderStatus();
+      },
     });
-    this.append(this._status);
+    this._view = created.view;
+    this._status = created.status;
+    this._resize = created.resize;
     this._pendingValue = null;
-    this._resize = new ResizeObserver(() => this._view?.requestMeasure());
+    this._focusFromLabel = (event) => {
+      event.preventDefault();
+      host._view?.focus();
+    };
     this._pushModel();
     this._renderStatus();
     this._loadMappings();
@@ -265,6 +176,53 @@ export class MongQueryEditor extends HTMLElement {
     this._view?.requestMeasure();
   }
 
+  focus() {
+    this._view?.focus();
+  }
+
+  indent() {
+    const current = this.value;
+    let next;
+    try {
+      next = formatJson(current);
+    } catch {
+      if (this._status) {
+        this._status.textContent = "Indent needs valid JSON";
+        this._status.dataset.severity = "error";
+      }
+      return false;
+    }
+    if (!this._view) {
+      this._pendingValue = next;
+      this.dispatchEvent(new CustomEvent("formatted", { bubbles: true }));
+      return true;
+    }
+    if (next !== current) {
+      const line = this._view.state.doc.lineAt(this._view.state.selection.main.head).number;
+      const lines = next.split("\n");
+      let anchor = 0;
+      const target = Math.min(line, lines.length);
+      for (let i = 1; i < target; i += 1) anchor += lines[i - 1].length + 1;
+      this._silence = true;
+      this._view.dispatch({
+        changes: { from: 0, to: this._view.state.doc.length, insert: next },
+        selection: { anchor: Math.min(anchor, next.length) },
+      });
+      this._silence = false;
+    }
+    this._renderStatus();
+    this.dispatchEvent(new CustomEvent("formatted", { bubbles: true }));
+    return true;
+  }
+
+  _bindLabel() {
+    if (!this.id || this._label) return;
+    const label = document.querySelector(`label[for="${CSS.escape(this.id)}"]`);
+    if (!label) return;
+    this._label = label;
+    label.addEventListener("click", this._focusFromLabel);
+  }
+
   _pushModel() {
     if (!this._view) return;
     this._view.dispatch({ effects: setModel.of(this._model) });
@@ -293,9 +251,7 @@ export class MongQueryEditor extends HTMLElement {
   _renderStatus() {
     if (!this._status || !this._view) return;
     const issues = lintQuery(this._view.state, this._model);
-    const first = issues[0];
-    this._status.textContent = first ? first.message : "";
-    this._status.dataset.severity = first ? (first.severity || "error") : "";
+    renderStatus(this._status, issues);
     const signature = issues.map((item) => `${item.severity}:${item.from}:${item.message}`).join("|");
     if (signature !== this._signature) {
       this._signature = signature;

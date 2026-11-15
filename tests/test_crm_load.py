@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+from functools import partial
 from typing import Any
 
 import pytest
@@ -12,6 +14,7 @@ from scripts.crm.generate import (
     generate_crm_dataset,
 )
 from scripts.crm.load import (
+    _list_upserter_factory,
     ensure_search_index,
     search_definition,
     stream_crm_documents,
@@ -85,6 +88,25 @@ def test_ensure_search_index_is_idempotent() -> None:
     assert service.indexes[0]["definition"]["mappings"]["fields"]["account_id"] == {"type": "token"}
 
 
+def test_server_default_analyzers_are_not_a_definition_change() -> None:
+    service = FakeService()
+    definition = search_definition("accounts")
+    created, action = ensure_search_index(service, name="accounts_search", definition=definition)
+    echoed = dict(definition)
+    echoed["analyzer"] = "lucene.standard"
+    echoed["searchAnalyzer"] = "lucene.standard"
+    service.indexes[0]["definition"] = echoed
+    again, again_action = ensure_search_index(service, name="accounts_search", definition=definition)
+    assert (action, again_action) == ("created", "existing")
+    assert again["index_id"] == created["index_id"]
+    assert len(service.indexes) == 1
+
+    echoed["analyzer"] = "lucene.keyword"
+    service.indexes[0]["definition"] = echoed
+    _, changed = ensure_search_index(service, name="accounts_search", definition=definition)
+    assert changed == "updated"
+
+
 def test_generation_is_deterministic() -> None:
     a = generate_crm_dataset(account_count=3, seed=7)
     b = generate_crm_dataset(account_count=3, seed=7)
@@ -154,6 +176,25 @@ def test_stream_batches_and_counts() -> None:
     assert {concern for _, _, concern in upserter.calls} == {"committed"}
 
 
+def test_account_is_upserted_before_its_children() -> None:
+    spec = _spec(accounts=2, contacts_per_account=(40, 40), opportunities_per_account=(15, 15))
+    upserter = FakeUpserter()
+    stream_crm_documents(
+        spec,
+        upserter=upserter,
+        index_ids=INDEX_IDS,
+        batch_size=10,
+        progress=False,
+    )
+    kinds = [index_id for index_id, _, _ in upserter.calls]
+    assert kinds[0] == INDEX_IDS["accounts"]
+    assert len(upserter.calls[0][1]) == 1
+    # The second account is sent before the run has written every child of the first.
+    second_account = kinds.index(INDEX_IDS["accounts"], 1)
+    assert kinds[:second_account].count(INDEX_IDS["contacts"]) < 40
+    assert {len(docs) for index_id, docs, _ in upserter.calls if index_id == INDEX_IDS["accounts"]} == {1}
+
+
 def test_stream_interrupt_reports_resume_point() -> None:
     spec = _spec(accounts=50, contacts_per_account=(2, 2), opportunities_per_account=(1, 1))
     report = stream_crm_documents(
@@ -168,6 +209,43 @@ def test_stream_interrupt_reports_resume_point() -> None:
     assert resume is not None and 0 <= resume < 50
     written_accounts = report["entities"]["accounts"]["written"]
     assert resume <= written_accounts
+
+
+def test_stream_workers_cover_every_document() -> None:
+    spec = _spec(accounts=11, contacts_per_account=(1, 2), opportunities_per_account=(1, 1))
+    ctx = mp.get_context("spawn")
+    with ctx.Manager() as manager:
+        calls = manager.list()
+        report = stream_crm_documents(
+            spec,
+            index_ids=INDEX_IDS,
+            client_factory=partial(_list_upserter_factory, calls),
+            workers=3,
+            batch_size=4,
+            progress=False,
+        )
+        recorded = list(calls)
+
+    assert report["interrupted"] is False
+    assert report["workers"] == 3
+    assert report["resume_from_account"] is None
+    expected = {
+        INDEX_IDS[entity]: [doc["_id"] for _, ent, doc in CrmGenerator(spec).iter_documents() if ent == entity]
+        for entity in INDEX_IDS
+    }
+    got: dict[str, list[str]] = {index_id: [] for index_id in INDEX_IDS.values()}
+    pids: set[int] = set()
+    for pid, index_id, concern, ids in recorded:
+        assert concern == "indexed"
+        assert 1 <= len(ids) <= 4
+        got[index_id].extend(ids)
+        pids.add(pid)
+    assert len(pids) == 3
+    for index_id, ids in expected.items():
+        assert sorted(got[index_id]) == sorted(ids)
+        assert len(got[index_id]) == len(ids)
+    for entity, info in report["entities"].items():
+        assert info["written"] == len(expected[INDEX_IDS[entity]])
 
 
 def test_invalid_ranges_rejected() -> None:

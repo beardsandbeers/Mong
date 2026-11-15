@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "faker>=30.0",
     "flask>=3.0",
-    "mongot-standalone-client==0.5.0",
+    "mongot-standalone-client==0.8.0",
     "tqdm>=4.66",
 ]
 

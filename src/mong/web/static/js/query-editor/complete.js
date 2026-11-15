@@ -11,7 +11,7 @@ import {
   specFor,
   valueTemplate,
 } from "./catalog.js";
-import { contextAt, rootIndexName } from "./context.js";
+import { contextAt, effectiveIndexName } from "./context.js";
 import { fieldsFor } from "./fields.js";
 
 function typeLabel(types) {
@@ -109,7 +109,7 @@ function keyCompletions(schema, ctx, fields) {
 function valueCompletions(spec, schema, ctx, fields, mode, model) {
   if (!spec) return [];
   if (spec.kind === "index") {
-    const wanted = indexModeType(mode);
+    const wanted = spec.indexType || indexModeType(mode);
     return (model?.indexes || [])
       .filter((index) => index.type === wanted && index.name)
       .map((index) => ({
@@ -202,7 +202,8 @@ export function queryCompletion(context, model) {
   const ctx = contextAt(context.state, context.pos);
   if (!ctx) return null;
   const mode = model?.mode === "vector" ? "vector" : "search";
-  const { fields } = fieldsFor(model, rootIndexName(context.state));
+  const indexName = effectiveIndexName(context.state, ctx.objectPath, ctx.key);
+  const { fields } = fieldsFor(model, indexName);
   const schema = locate(mode, ctx.objectPath);
 
   if (ctx.kind === "key") {
@@ -210,7 +211,7 @@ export function queryCompletion(context, model) {
     return finish(ctx, context.pos, keyCompletions(schema, ctx, fields));
   }
   if (ctx.kind === "element") {
-    if (!context.explicit) return null;
+    if (!context.explicit && !ctx.partial && ctx.enclose !== "quotes") return null;
     return finish(ctx, context.pos, elementCompletions(schema));
   }
   if (ctx.kind === "value") {
@@ -245,8 +246,15 @@ export function applyCompletion(view, option) {
   const doc = view.state.doc;
 
   if (option.applyKind === "element") {
-    const text = withCommas(doc, ctx, option.scaffold || "{}");
-    view.dispatch({ changes: { from: ctx.from, to: ctx.to, insert: text }, selection: cursorFor(ctx.from, text) });
+    const span = ctx.unclosed
+      ? { from: ctx.tokenFrom, to: ctx.tokenTo }
+      : { from: ctx.from, to: ctx.to };
+    const text = withCommas(
+      doc,
+      { ...ctx, from: span.from, to: span.to, enclose: ctx.unclosed ? "bare" : ctx.enclose },
+      option.scaffold || "{}",
+    );
+    view.dispatch({ changes: { from: span.from, to: span.to, insert: text }, selection: cursorFor(span.from, text) });
     return;
   }
 
@@ -278,6 +286,16 @@ export function applyCompletion(view, option) {
   }
 
   const raw = option.insert ?? option.label;
+  if (ctx.unclosed && ctx.enclose === "quotes") {
+    const insert = option.quote === false || typeof raw === "number" || typeof raw === "boolean"
+      ? String(raw)
+      : JSON.stringify(raw);
+    view.dispatch({
+      changes: { from: ctx.tokenFrom, to: ctx.tokenTo, insert },
+      selection: EditorSelection.cursor(ctx.tokenFrom + insert.length),
+    });
+    return;
+  }
   let text = option.quote === false || typeof raw === "number" || typeof raw === "boolean"
     ? String(raw)
     : raw;
@@ -302,6 +320,7 @@ export function queryCompletionSource(readModel) {
     return {
       from: result.from,
       to: result.to,
+      validFor: /^[\w$.-]*$/,
       options: result.options.map((option) => ({
         label: option.label,
         detail: option.detail,

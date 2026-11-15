@@ -50,7 +50,7 @@
     </section>
 
     <section class="panel" id="panel-indexes">
-      <div class="layout-2">
+      <div class="stack">
         <div class="section">
           <div class="section__head">
             <h2>Indexes</h2>
@@ -84,7 +84,8 @@
               </div>
               <div class="field">
                 <label for="index-definition">Definition (JSON)</label>
-                <textarea id="index-definition" spellcheck="false"></textarea>
+                <mong-definition-editor id="index-definition"></mong-definition-editor>
+                <p class="hint">Ctrl+Space completes keys, field types, and analyzers. Ctrl+Enter submits.</p>
               </div>
               <div class="actions">
                 <button type="submit" class="btn" id="index-submit">Create index</button>
@@ -157,7 +158,21 @@
             </div>
 
             <div class="field query-field" id="docs-query-wrap" hidden>
-              <label for="docs-query">Query expression (JSON)</label>
+              <div class="field__head">
+                <label for="docs-query">Query expression (JSON)</label>
+                <div class="field__head-actions">
+                  <label class="inline-field" for="docs-explain">
+                    Explain
+                    <select id="docs-explain">
+                      <option value="">Off</option>
+                      <option value="query_planner">Query planner</option>
+                      <option value="execution_stats">Execution stats</option>
+                      <option value="all_plans_execution">All plans</option>
+                    </select>
+                  </label>
+                  <button type="button" class="btn ghost" id="docs-query-indent" title="Pretty-print the query (Alt+Shift+F)">Indent</button>
+                </div>
+              </div>
               <mong-query-editor id="docs-query" mode="search"></mong-query-editor>
               <p class="hint" id="docs-query-hint"></p>
             </div>
@@ -178,6 +193,29 @@
         </div>
 
         <aside class="docs-side">
+          <section class="section docs-meta" id="docs-meta" hidden>
+            <div class="section__head">
+              <h2>Search meta</h2>
+              <div class="docs-meta__actions" id="docs-meta-actions" hidden>
+                <button type="button" class="btn ghost" id="docs-meta-expand">Expand</button>
+                <button type="button" class="btn ghost" id="docs-meta-collapse">Collapse</button>
+              </div>
+            </div>
+            <div class="section__body">
+              <div class="docs-meta__latency" id="docs-meta-latency" hidden>
+                <div class="docs-meta__stat">
+                  <div class="docs-meta__stat-label" title="Time from sending the search until this page received the response.">End to end</div>
+                  <div class="docs-meta__stat-value" id="docs-meta-e2e"></div>
+                </div>
+                <div class="docs-meta__stat" id="docs-meta-mongot-row">
+                  <div class="docs-meta__stat-label" title="Admin service time for the mongot call, including the connection, the RPC, and decoding the response.">Mongot</div>
+                  <div class="docs-meta__stat-value" id="docs-meta-mongot"></div>
+                </div>
+              </div>
+              <div id="docs-meta-tree" class="json-tree"></div>
+            </div>
+          </section>
+
           <div class="section">
             <div class="section__head"><h2>Upsert document</h2></div>
             <div class="section__body">
@@ -208,6 +246,43 @@
                 </div>
                 <div class="actions">
                   <button type="submit" class="btn danger">Delete</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section__head"><h2>Delete by query</h2></div>
+            <div class="section__body">
+              <form class="form-grid" id="delete-query-form">
+                <div class="field">
+                  <label for="delete-query-index">Index</label>
+                  <select id="delete-query-index" required></select>
+                </div>
+                <div class="field">
+                  <label for="delete-query-selector">Selector</label>
+                  <select id="delete-query-selector">
+                    <option value="search">Search query</option>
+                    <option value="vector">Vector metadata filter</option>
+                    <option value="match_all">Match all</option>
+                  </select>
+                </div>
+                <div class="field" id="delete-query-text-wrap">
+                  <label for="delete-query">Predicate JSON</label>
+                  <textarea id="delete-query" spellcheck="false" placeholder='{ "text": { "path": "title", "query": "coffee" } }'></textarea>
+                  <p class="hint" id="delete-query-hint">Search expression. An optional index key is ignored.</p>
+                </div>
+                <div class="field">
+                  <label for="delete-query-max">Max matches</label>
+                  <input id="delete-query-max" type="number" min="0" step="1" value="10000" />
+                  <p class="hint">0 uses the server default of 10,000. A larger cap is rejected.</p>
+                </div>
+                <label class="check">
+                  <input id="delete-query-dry" type="checkbox" checked />
+                  Dry run (count matches, delete nothing)
+                </label>
+                <div class="actions">
+                  <button type="submit" class="btn secondary" id="delete-query-submit">Count matches</button>
                 </div>
               </form>
             </div>

@@ -68,8 +68,10 @@ function operatorSlot(parent) {
   };
 }
 
-function clauseArray(parent) {
-  return { kind: "operators", enter: { role: "array", item: operatorSlot(parent) } };
+function clauseArray(parent, { allowJoin = false } = {}) {
+  const item = operatorSlot(parent);
+  if (allowJoin) item.operatorSet = FILTER_OPERATORS;
+  return { kind: "operators", enter: { role: "array", item } };
 }
 
 const SPAN_CLAUSES = {
@@ -241,12 +243,13 @@ export const OPERATORS = {
     requireAny: ["must", "mustNot", "should", "filter"],
     template: { must: [{ text: { path: "", query: "" } }] },
     options(parent) {
-      const clause = clauseArray(parent);
+      const scoring = clauseArray(parent);
+      const filter = clauseArray(parent, { allowJoin: true });
       return withScore({
-        must: clause,
-        mustNot: clause,
-        should: clause,
-        filter: clause,
+        must: scoring,
+        mustNot: filter,
+        should: scoring,
+        filter,
         minimumShouldMatch: NUMBER,
         doesNotAffect: STRING,
       });
@@ -325,11 +328,43 @@ export const OPERATORS = {
       },
     },
   }), { detail: "Vector search inside a search query" }),
-
-  wildcardPlaceholder: null,
 };
 
-delete OPERATORS.wildcardPlaceholder;
+/** Cross-index / self-join semijoin. Only valid in compound.filter and compound.mustNot. */
+const JOIN = defineOperator("join", null, {
+  from: {
+    kind: "index",
+    indexType: "SEARCH",
+    detail: "Foreign search index (omit for self-join)",
+  },
+  localField: { ...pathSpec(["token", "objectId"]), required: true, detail: "Local token or objectId join key" },
+  foreignField: {
+    ...pathSpec(["token", "objectId"]),
+    required: true,
+    detail: "Foreign token or objectId join key",
+    foreignIndex: true,
+  },
+  operator: {
+    kind: "operator",
+    required: true,
+    detail: "Foreign search predicate",
+    foreignIndex: true,
+    enter(parent) {
+      return operatorSlot(parent);
+    },
+  },
+}, {
+  detail: "Filter by a matching document in another (or the same) index",
+  template: {
+    from: "",
+    localField: "",
+    foreignField: "",
+    operator: { equals: { path: "", value: "" } },
+  },
+});
+
+/** Operators allowed inside compound.filter / mustNot, including join. */
+export const FILTER_OPERATORS = { ...OPERATORS, join: JOIN };
 
 const FACET = {
   kind: "object",
@@ -626,7 +661,7 @@ export function valueTemplate(spec) {
 }
 
 export function operatorTemplate(name) {
-  const op = OPERATORS[name] || SPAN_CLAUSES[name];
+  const op = OPERATORS[name] || FILTER_OPERATORS[name] || SPAN_CLAUSES[name];
   if (!op) return {};
   if (op.template) return structuredClone(op.template);
   const options = typeof op.options === "function" ? op.options(null) : (op.options || {});

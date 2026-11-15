@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { formatJson } from "../../src/mong/web/static/js/query-editor/json-editor.js";
 import { contextAt } from "../../src/mong/web/static/js/query-editor/context.js";
 import { queryCompletion } from "../../src/mong/web/static/js/query-editor/complete.js";
 import { lintQuery } from "../../src/mong/web/static/js/query-editor/lint.js";
@@ -43,6 +44,14 @@ function messages(text, queryModel = model()) {
   return lintQuery(state, queryModel).map((item) => item.message);
 }
 
+test("formatJson pretty-prints a search query and keeps key order", () => {
+  assert.equal(
+    formatJson('{"text":{"query":"coffee","path":"title"}}'),
+    '{\n  "text": {\n    "query": "coffee",\n    "path": "title"\n  }\n}',
+  );
+  assert.throws(() => formatJson("{"), SyntaxError);
+});
+
 test("context paths follow operators, compound clauses, and values", () => {
   const key = contextAt(...Object.values(withCursor('{ "|"}')));
   assert.equal(key.kind, "key");
@@ -59,6 +68,40 @@ test("context paths follow operators, compound clauses, and values", () => {
   assert.equal(nested.kind, "value");
   assert.deepEqual(nested.objectPath, ["compound", "must", 0, "text"]);
   assert.equal(nested.partial, "ti");
+});
+
+test("unclosed strings keep completing keys, values, and array operators", () => {
+  const key = contextAt(...Object.values(withCursor('{\n  "com|\n}')));
+  assert.equal(key.kind, "key");
+  assert.equal(key.enclose, "quotes");
+  assert.equal(key.partial, "com");
+  assert.deepEqual(
+    labels(queryCompletion({ ...withCursor('{\n  "com|\n}'), explicit: false }, model())),
+    ["compound"],
+  );
+
+  const nested = contextAt(...Object.values(withCursor('{\n  "compound": {\n    "mus|\n  }\n}')));
+  assert.equal(nested.partial, "mus");
+  assert.deepEqual(nested.objectPath, ["compound"]);
+  const nestedLabels = labels(queryCompletion({
+    ...withCursor('{\n  "compound": {\n    "mus|\n  }\n}'),
+    explicit: false,
+  }, model()));
+  assert.equal(nestedLabels.includes("must"), true);
+  assert.equal(nestedLabels.includes("mustNot"), true);
+
+  const path = labels(queryCompletion({
+    ...withCursor('{\n  "text": { "path": "ti|\n  }\n}'),
+    explicit: false,
+  }, model()));
+  assert.equal(path.includes("title"), true);
+  assert.equal(path.includes("account_id"), false);
+
+  const clause = labels(queryCompletion({
+    ...withCursor('{\n  "compound": { "must": [ "tex|\n  ] }\n}'),
+    explicit: false,
+  }, model()));
+  assert.equal(clause.includes("text"), true);
 });
 
 test("root keys offer operators and index, and path values follow field types", () => {
@@ -229,4 +272,269 @@ test("wildcard on an analyzed string requires allowAnalyzedField", () => {
   assert.equal(blocked.some((message) => message.includes("allowAnalyzedField")), true);
   const allowed = messages('{ "wildcard": { "path": "title", "query": "cof*", "allowAnalyzedField": true } }');
   assert.equal(allowed.some((message) => message.includes("allowAnalyzedField")), false);
+});
+
+const JOIN_INDEXES = [
+  {
+    index_id: "idx-contacts",
+    name: "contacts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: {
+        dynamic: false,
+        fields: {
+          account_id: { type: "token" },
+          title: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    index_id: "idx-accounts",
+    name: "accounts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: {
+        dynamic: false,
+        fields: {
+          account_id: { type: "token" },
+          region: { type: "token" },
+        },
+      },
+    },
+  },
+  {
+    index_id: "idx-vector",
+    name: "accounts_vector",
+    type: "VECTOR_SEARCH",
+    definition: {
+      fields: [{ type: "vector", path: "embedding", numDimensions: 3, similarity: "cosine" }],
+    },
+  },
+];
+
+function joinModel(extra = {}) {
+  return model({ indexes: JOIN_INDEXES, indexId: "idx-contacts", ...extra });
+}
+
+test("join is offered in compound.filter and mustNot, not must or root", () => {
+  const q = joinModel();
+  const filter = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "|" } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(filter.includes("join"), true);
+  assert.equal(filter.includes("text"), true);
+
+  const mustNot = labels(queryCompletion({
+    ...withCursor('{ "compound": { "mustNot": [ { "|" } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(mustNot.includes("join"), true);
+
+  const must = labels(queryCompletion({
+    ...withCursor('{ "compound": { "must": [ { "|" } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(must.includes("join"), false);
+
+  const root = labels(queryCompletion({ ...withCursor('{ "|"}'), explicit: true }, q));
+  assert.equal(root.includes("join"), false);
+});
+
+test("join from and field completions use search indexes and token or objectId paths", () => {
+  const q = joinModel();
+  const from = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "join": { "from": "|" } } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(from.includes("accounts_search"), true);
+  assert.equal(from.includes("contacts_search"), true);
+  assert.equal(from.includes("accounts_vector"), false);
+
+  const local = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "join": { "localField": "|" } } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(local.includes("account_id"), true);
+  assert.equal(local.includes("title"), false);
+
+  const foreign = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "join": { "from": "accounts_search", "foreignField": "|" } } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(foreign.includes("account_id"), true);
+  assert.equal(foreign.includes("region"), true);
+  assert.equal(foreign.includes("title"), false);
+
+  const foreignPath = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "join": { "from": "accounts_search", "operator": { "equals": { "path": "|" } } } } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(foreignPath.includes("region"), true);
+  assert.equal(foreignPath.includes("title"), false);
+});
+
+test("join localField uses the selected index when the foreign index lacks that field", () => {
+  const contacts = {
+    index_id: "idx-contacts",
+    name: "contacts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: {
+        dynamic: true,
+        fields: {
+          _id: { type: "token" },
+          account_id: { type: "token" },
+        },
+      },
+    },
+  };
+  const accounts = {
+    index_id: "idx-accounts",
+    name: "accounts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: { dynamic: true, fields: { _id: { type: "token" } } },
+    },
+  };
+  const q = model({
+    indexes: [contacts, accounts],
+    indexId: "idx-contacts",
+    mappings: {
+      "idx-contacts": {
+        dynamic: false,
+        fields: {
+          _id: { type: "token" },
+          account_id: { type: "token" },
+          full_name: { type: "string" },
+        },
+      },
+      "idx-accounts": {
+        dynamic: false,
+        fields: { _id: { type: "token" }, name: { type: "string" } },
+      },
+    },
+  });
+  const issues = messages(`{
+    "compound": {
+      "filter": [{
+        "join": {
+          "from": "accounts_search",
+          "localField": "account_id",
+          "foreignField": "_id",
+          "operator": { "equals": { "path": "", "value": "" } }
+        }
+      }],
+      "must": [{ "text": { "path": "full_name", "query": "andrea" } }]
+    }
+  }`, q);
+  assert.equal(issues.some((message) => message.includes("account_id")), false);
+  assert.equal(issues.some((message) => message.includes("full_name")), false);
+  assert.equal(issues.some((message) => message.includes('Unknown index')), false);
+  assert.equal(issues.some((message) => message === "Path is empty"), true);
+});
+
+test("lint accepts a cross-index join and rejects bad placements and keys", () => {
+  const q = joinModel();
+  const ok = messages(`{
+    "compound": {
+      "must": [{ "text": { "path": "title", "query": "architect" } }],
+      "filter": [{
+        "join": {
+          "from": "accounts_search",
+          "localField": "account_id",
+          "foreignField": "account_id",
+          "operator": { "equals": { "path": "region", "value": "Berlin" } }
+        }
+      }]
+    }
+  }`, q);
+  assert.equal(ok.some((message) => message.includes("join") || message.includes("cannot query")), false);
+
+  assert.equal(
+    messages('{ "join": { "localField": "account_id", "foreignField": "account_id", "operator": { "exists": { "path": "account_id" } } } }', q)
+      .some((message) => message.includes("compound.filter")),
+    true,
+  );
+  assert.equal(
+    messages('{ "compound": { "must": [{ "join": { "localField": "account_id", "foreignField": "account_id", "operator": { "exists": { "path": "account_id" } } } }] } }', q)
+      .some((message) => message.includes("compound.filter")),
+    true,
+  );
+  assert.equal(
+    messages(`{
+      "compound": {
+        "filter": [{
+          "join": {
+            "from": "accounts_vector",
+            "localField": "account_id",
+            "foreignField": "account_id",
+            "operator": { "exists": { "path": "account_id" } }
+          }
+        }]
+      }
+    }`, q).some((message) => message.includes("VECTOR_SEARCH")),
+    true,
+  );
+  assert.equal(
+    messages(`{
+      "compound": {
+        "filter": [{
+          "join": {
+            "from": "accounts_search",
+            "localField": "title",
+            "foreignField": "account_id",
+            "operator": { "equals": { "path": "region", "value": "Berlin" } }
+          }
+        }]
+      }
+    }`, q).some((message) => message.includes("token")),
+    true,
+  );
+});
+
+test("join accepts an objectId key and still rejects a string key", () => {
+  const contacts = {
+    index_id: "idx-contacts",
+    name: "contacts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: {
+        dynamic: false,
+        fields: {
+          _id: { type: "objectId" },
+          title: { type: "string" },
+        },
+      },
+    },
+  };
+  const accounts = {
+    index_id: "idx-accounts",
+    name: "accounts_search",
+    type: "SEARCH",
+    definition: {
+      mappings: { dynamic: false, fields: { _id: { type: "objectId" }, region: { type: "token" } } },
+    },
+  };
+  const q = model({ indexes: [contacts, accounts], indexId: "idx-contacts" });
+  const local = labels(queryCompletion({
+    ...withCursor('{ "compound": { "filter": [ { "join": { "localField": "|" } } ] } }'),
+    explicit: true,
+  }, q));
+  assert.equal(local.includes("_id"), true);
+  assert.equal(local.includes("title"), false);
+  const ok = messages(`{
+    "compound": {
+      "filter": [{
+        "join": {
+          "from": "accounts_search",
+          "localField": "_id",
+          "foreignField": "_id",
+          "operator": { "equals": { "path": "region", "value": "Berlin" } }
+        }
+      }]
+    }
+  }`, q);
+  assert.equal(ok.some((message) => message.includes("cannot query") || message.includes("objectId")), false);
 });

@@ -240,9 +240,12 @@ export class FieldIndex {
   }
 }
 
+/** `dynamic` is a boolean, or `{ typeSet }` naming an entry in `typeSets`. A bare string is rejected. */
 function typesForDynamic(dynamic, typeSets) {
-  if (typeof dynamic === "string") return new Set(typeSets.get(dynamic) || []);
-  return new Set();
+  if (!dynamic || typeof dynamic !== "object") return new Set();
+  const name = dynamic.typeSet;
+  if (typeof name !== "string" || !name) return new Set();
+  return new Set(typeSets.get(name) || []);
 }
 
 function cloneEntry(entry) {

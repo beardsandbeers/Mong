@@ -233,6 +233,11 @@ button {
   gap: 16px;
 }
 
+.stack {
+  display: grid;
+  gap: 16px;
+}
+
 .section {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -285,6 +290,59 @@ button {
   font-size: 0.82rem;
   color: var(--muted);
   font-weight: 500;
+}
+
+.field__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field__head .btn.ghost {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+}
+
+.field__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.inline-field select {
+  width: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+  color: var(--ink);
+  font: inherit;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.check input {
+  width: auto;
+}
+
+#delete-query {
+  min-height: 96px;
 }
 
 .field input,
@@ -369,7 +427,36 @@ button {
   text-align: left;
   padding: 10px 8px;
   border-bottom: 1px solid var(--line);
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.index-table th,
+.index-table td {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.index-table th:first-child,
+.index-table td:first-child {
+  width: auto;
+}
+
+.table td.row-actions {
+  width: 1%;
+  padding-right: 4px;
+  white-space: nowrap;
+}
+
+.row-actions__group {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+.row-actions__group .btn {
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
 }
 
 .table th {
@@ -574,6 +661,163 @@ button {
   gap: 16px;
 }
 
+.docs-meta__actions {
+  display: flex;
+  gap: 2px;
+}
+
+.docs-meta__actions .btn {
+  padding: 6px 8px;
+  font-size: 0.8rem;
+}
+
+.docs-meta__latency {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.docs-meta__stat {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f7fafb;
+}
+
+.docs-meta__stat-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.docs-meta__stat-value {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.json-tree {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  max-height: min(58vh, 520px);
+  overflow: auto;
+}
+
+.json-tree__note {
+  margin: 0;
+}
+
+.json-node {
+  min-width: 0;
+}
+
+.json-node > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin-left: -4px;
+}
+
+.json-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+.json-node > summary::marker {
+  content: "";
+}
+
+.json-node > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  align-self: center;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #7d8d97;
+}
+
+.json-node[open] > summary::before {
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #7d8d97;
+  border-bottom: 0;
+}
+
+.json-node > summary:hover {
+  background: #f3f7f8;
+}
+
+.json-node[open] > summary .json-preview {
+  display: none;
+}
+
+.json-children {
+  margin: 0 0 1px 0.35rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid #e1e8ec;
+}
+
+.json-close {
+  padding: 0 4px 2px 0.95rem;
+  color: #8b9aa3;
+}
+
+.json-leaf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 4px;
+  min-width: 0;
+}
+
+.json-key {
+  color: #0c5c73;
+  font-weight: 500;
+}
+
+.json-index {
+  color: var(--muted);
+}
+
+.json-str {
+  color: #067a46;
+  overflow-wrap: anywhere;
+}
+
+.json-num {
+  color: #b45309;
+}
+
+.json-bool {
+  color: #6d28d9;
+}
+
+.json-null {
+  color: #9aa7b0;
+  font-style: italic;
+}
+
+.json-punct {
+  color: #8b9aa3;
+}
+
+.json-preview {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 .mode-tabs {
   display: inline-flex;
   gap: 4px;
@@ -621,6 +865,10 @@ button {
 .query-field textarea,
 .query-editor-host {
   min-height: 110px;
+}
+
+.definition-editor-host.query-editor-host {
+  min-height: 160px;
 }
 
 .query-editor-host {

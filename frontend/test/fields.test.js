@@ -42,7 +42,7 @@ test("flattens static, multi-type, nested, and multi-analyzer fields", () => {
 
 test("dynamic mappings and type sets do not treat strings as token", () => {
   const index = FieldIndex.compile({
-    mappings: { dynamic: "onlyStrings" },
+    mappings: { dynamic: { typeSet: "onlyStrings" } },
     typeSets: [{ name: "onlyStrings", types: [{ type: "string" }, { type: "stringFacet" }] }],
   });
   const notes = index.lookup("notes");

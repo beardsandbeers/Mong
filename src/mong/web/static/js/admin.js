@@ -1,5 +1,6 @@
 (() => {
   const FIELD_STATS_PAGE_SIZE = 100;
+  const DOCS_SESSION_KEY = "mong.docs.v1";
 
   const state = {
     indexes: [],
@@ -53,11 +54,15 @@
   const PANEL_META = {
     overview: ["Overview", "Instance health and live indexes."],
     indexes: ["Indexes", "Create, edit, and drop search or vector indexes."],
-    documents: ["Documents", "Browse, search, upsert, and delete by id."],
+    documents: ["Documents", "Browse, search, explain, upsert, and delete by id or query."],
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+  let sessionReady = false;
+  let allowUnload = false;
+  let pendingDocsIndexId = "";
 
   function toast(message, type = "ok") {
     const host = $("#toast");
@@ -135,12 +140,14 @@
     const options = state.indexes
       .map((idx) => `<option value="${escapeHtml(idx.index_id)}">${escapeHtml(idx.name)} (${escapeHtml(idx.type)})</option>`)
       .join("") || `<option value="">No indexes</option>`;
-    ["#docs-index", "#upsert-index"].forEach((sel) => {
+    ["#docs-index", "#upsert-index", "#delete-query-index"].forEach((sel) => {
       const el = $(sel);
       if (!el) return;
       const current = el.value;
+      const preferred = sel === "#docs-index" && pendingDocsIndexId ? pendingDocsIndexId : current;
       el.innerHTML = options;
-      if (current && [...el.options].some((o) => o.value === current)) el.value = current;
+      const pick = [preferred, current].find((value) => value && [...el.options].some((option) => option.value === value));
+      if (pick) el.value = pick;
     });
     syncQueryEditor();
   }
@@ -182,7 +189,7 @@
     }
     host.innerHTML = `
       <div class="table-scroll">
-      <table class="table">
+      <table class="table${actions ? " index-table" : ""}">
         <thead>
           <tr>
             <th>Name</th>
@@ -213,12 +220,14 @@
               <td class="num">${formatCount(stats.queries)}</td>
               <td class="mono">${escapeHtml(idx.active_revision)} / ${escapeHtml(idx.desired_revision)}</td>
               ${actions ? `
-                <td class="actions">
-                  <button type="button" class="btn ghost" data-action="edit">Edit</button>
-                  <button type="button" class="btn ghost" data-action="select">Details</button>
-                  <button type="button" class="btn ghost" data-action="stats">Stats</button>
-                  ${idx.type === "SEARCH" ? `<button type="button" class="btn ghost" data-action="export-mapping">Export mapping</button>` : ""}
-                  <button type="button" class="btn ghost" data-action="drop">Drop</button>
+                <td class="row-actions">
+                  <div class="row-actions__group">
+                    <button type="button" class="btn ghost" data-action="edit">Edit</button>
+                    <button type="button" class="btn ghost" data-action="select">Details</button>
+                    <button type="button" class="btn ghost" data-action="stats">Stats</button>
+                    ${idx.type === "SEARCH" ? `<button type="button" class="btn ghost" data-action="export-mapping">Export mapping</button>` : ""}
+                    <button type="button" class="btn ghost" data-action="drop">Drop</button>
+                  </div>
                 </td>` : ""}
             </tr>`;
           }).join("")}
@@ -267,13 +276,20 @@
     fillIndexSelects();
   }
 
+  function definitionEditor() {
+    return $("#index-definition");
+  }
+
   function setIndexFormDefaults() {
     $("#index-edit-id").value = "";
     $("#index-name").value = "";
     $("#index-name").disabled = false;
     $("#index-type").disabled = false;
     $("#index-type").value = "SEARCH";
-    $("#index-definition").value = DEFAULT_SEARCH_DEFINITION;
+    const editor = definitionEditor();
+    editor.mode = "SEARCH";
+    editor.index = null;
+    editor.value = DEFAULT_SEARCH_DEFINITION;
     $("#index-submit").textContent = "Create index";
   }
 
@@ -284,7 +300,10 @@
     $("#index-name").disabled = true;
     $("#index-type").value = index.type;
     $("#index-type").disabled = true;
-    $("#index-definition").value = JSON.stringify(index.definition || {}, null, 2);
+    const editor = definitionEditor();
+    editor.mode = index.type === "VECTOR_SEARCH" ? "VECTOR_SEARCH" : "SEARCH";
+    editor.index = index;
+    editor.value = JSON.stringify(index.definition || {}, null, 2);
     $("#index-submit").textContent = "Update definition";
     showIndexDetail(index);
     toast(`Editing ${index.name}`);
@@ -300,7 +319,10 @@
     setIndexFormDefaults();
     $("#index-name").value = `${index.name}_static`;
     $("#index-type").value = "SEARCH";
-    $("#index-definition").value = JSON.stringify(exported.definition, null, 2);
+    const editor = definitionEditor();
+    editor.mode = "SEARCH";
+    editor.index = index;
+    editor.value = JSON.stringify(exported.definition, null, 2);
     toast(`Static mapping for ${index.name} loaded into the form. Create it, then reingest documents.`);
   }
 
@@ -571,11 +593,217 @@
       return;
     }
     if (!page.results.length) {
-      host.innerHTML = `<div class="empty">No results on this page.</div>`;
+      const planner = page.explain && page.explain_verbosity === "query_planner";
+      host.innerHTML = planner
+        ? `<div class="empty">Query planner returns the plan and no hits. The plan is in Search meta.</div>`
+        : `<div class="empty">No results on this page.</div>`;
     } else {
       host.innerHTML = page.results.map((hit, i) => renderDocCard(hit, i)).join("");
     }
     updatePager();
+    renderSearchMeta();
+    persistDocsState();
+  }
+
+  function searchMetaValue() {
+    const pages = state.docs.pages;
+    if (!pages.length || state.docs.pageIndex < 0) return { status: "idle", metadata: null, explain: null };
+    const current = pages[state.docs.pageIndex] || {};
+    const explain = current.explain ?? null;
+    if (current.metadata != null) return { status: "ready", metadata: current.metadata, explain };
+    for (let i = pages.length - 1; i >= 0; i -= 1) {
+      if (pages[i] && pages[i].metadata != null) {
+        return { status: "ready", metadata: pages[i].metadata, explain };
+      }
+    }
+    if (explain != null) return { status: "ready", metadata: null, explain };
+    return { status: "empty", metadata: null, explain: null };
+  }
+
+  function appendJsonSection(parent, title, value) {
+    const heading = document.createElement("h3");
+    heading.className = "index-stats__heading";
+    heading.textContent = title;
+    parent.append(heading, isJsonBranch(value) ? jsonBranch(value, 0) : jsonLiteral(value));
+  }
+
+  function isJsonBranch(value) {
+    if (value === null || typeof value !== "object") return false;
+    return Array.isArray(value) ? value.length > 0 : Object.keys(value).length > 0;
+  }
+
+  function jsonPunct(text) {
+    const el = document.createElement("span");
+    el.className = "json-punct";
+    el.textContent = text;
+    return el;
+  }
+
+  function jsonKey(key, arrayIndex) {
+    const el = document.createElement("span");
+    el.className = arrayIndex ? "json-index" : "json-key";
+    if (arrayIndex) el.textContent = key;
+    else el.textContent = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : JSON.stringify(key);
+    return el;
+  }
+
+  function jsonLiteral(value) {
+    const el = document.createElement("span");
+    if (value === null) {
+      el.className = "json-null";
+      el.textContent = "null";
+    } else if (typeof value === "string") {
+      el.className = "json-str";
+      el.textContent = JSON.stringify(value);
+    } else if (typeof value === "number") {
+      el.className = "json-num";
+      el.textContent = Number.isFinite(value) ? JSON.stringify(value) : String(value);
+    } else if (typeof value === "boolean") {
+      el.className = "json-bool";
+      el.textContent = value ? "true" : "false";
+    } else if (Array.isArray(value)) {
+      el.className = "json-punct";
+      el.textContent = "[]";
+    } else if (typeof value === "object") {
+      el.className = "json-punct";
+      el.textContent = "{}";
+    } else {
+      el.className = "json-punct";
+      el.textContent = String(value);
+    }
+    return el;
+  }
+
+  function jsonBranch(value, depth) {
+    const isArray = Array.isArray(value);
+    const details = document.createElement("details");
+    details.className = "json-node";
+    details.open = depth < 3;
+    const summary = document.createElement("summary");
+    const preview = document.createElement("span");
+    preview.className = "json-preview";
+    const count = isArray ? value.length : Object.keys(value).length;
+    preview.textContent = isArray
+      ? `${count} ${count === 1 ? "item" : "items"}`
+      : `${count} ${count === 1 ? "key" : "keys"}`;
+    summary.append(jsonPunct(isArray ? "[" : "{"), preview);
+    const children = document.createElement("div");
+    children.className = "json-children";
+    const entries = isArray ? value.map((item, index) => [String(index), item, true]) : Object.entries(value).map(([key, item]) => [key, item, false]);
+    for (const [key, item, arrayIndex] of entries) {
+      children.append(jsonProperty(key, item, depth + 1, arrayIndex));
+    }
+    const close = document.createElement("div");
+    close.className = "json-close";
+    close.append(jsonPunct(isArray ? "]" : "}"));
+    details.append(summary, children, close);
+    return details;
+  }
+
+  function jsonProperty(key, value, depth, arrayIndex) {
+    if (!isJsonBranch(value)) {
+      const row = document.createElement("div");
+      row.className = "json-leaf";
+      row.append(jsonKey(key, arrayIndex), jsonPunct(":"), jsonLiteral(value));
+      return row;
+    }
+    const branch = jsonBranch(value, depth);
+    branch.querySelector("summary").prepend(jsonKey(key, arrayIndex), jsonPunct(":"));
+    return branch;
+  }
+
+  function jsonNote(text) {
+    const note = document.createElement("p");
+    note.className = "hint json-tree__note";
+    note.textContent = text;
+    return note;
+  }
+
+  function renderSearchMeta() {
+    const panel = $("#docs-meta");
+    const tree = $("#docs-meta-tree");
+    const actions = $("#docs-meta-actions");
+    if (!panel || !tree || !actions) return;
+    const searching = state.docs.mode === "search" || state.docs.mode === "vector";
+    if (!searching) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    renderSearchLatency();
+    const view = searchMetaValue();
+    const signature = view.status === "ready" ? JSON.stringify({ metadata: view.metadata, explain: view.explain }) : view.status;
+    if (tree.dataset.signature === signature) {
+      actions.hidden = view.status !== "ready" || !tree.querySelector("details");
+      return;
+    }
+    tree.dataset.signature = signature;
+    tree.replaceChildren();
+    if (view.status === "idle") {
+      tree.append(jsonNote("Run a search to see count, facets, and other metadata."));
+      actions.hidden = true;
+      return;
+    }
+    if (view.status === "empty") {
+      tree.append(jsonNote("This search did not return metadata."));
+      actions.hidden = true;
+      return;
+    }
+    if (view.explain != null) {
+      if (view.metadata != null) appendJsonSection(tree, "Metadata", view.metadata);
+      appendJsonSection(tree, "Explain", view.explain);
+    } else {
+      tree.append(isJsonBranch(view.metadata) ? jsonBranch(view.metadata, 0) : jsonLiteral(view.metadata));
+    }
+    actions.hidden = !tree.querySelector("details");
+  }
+
+  function formatLatency(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value) || value < 0) return "—";
+    if (value < 1000) {
+      const digits = value < 10 ? 2 : value < 100 ? 1 : 0;
+      return `${value.toFixed(digits)} ms`;
+    }
+    return `${(value / 1000).toFixed(2)} s`;
+  }
+
+  function renderSearchLatency() {
+    const host = $("#docs-meta-latency");
+    const mongotRow = $("#docs-meta-mongot-row");
+    if (!host || !mongotRow) return;
+    const page = state.docs.pages[state.docs.pageIndex];
+    const endToEnd = page?.e2e_latency_ms;
+    const mongot = page?.latency_ms;
+    if (!page || (endToEnd == null && mongot == null)) {
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    $("#docs-meta-e2e").textContent = formatLatency(endToEnd);
+    mongotRow.hidden = mongot == null;
+    $("#docs-meta-mongot").textContent = formatLatency(mongot);
+  }
+
+  function appendEndToEndLatency(result, millis) {
+    if (!result || typeof result !== "object") return;
+    const metadata = result.metadata;
+    if (metadata == null || typeof metadata !== "object" || Array.isArray(metadata)) {
+      result.metadata = { endToEndLatencyMillis: millis };
+      return;
+    }
+    metadata.endToEndLatencyMillis = millis;
+  }
+
+  async function timedQuery(path, options) {
+    const started = performance.now();
+    const result = await api(path, options);
+    if (result && typeof result === "object") {
+      const millis = Math.round(performance.now() - started);
+      result.e2e_latency_ms = millis;
+      appendEndToEndLatency(result, millis);
+    }
+    return result;
   }
 
   async function killActiveCursor() {
@@ -614,6 +842,8 @@
       queryWrap.hidden = true;
       queryWrap.setAttribute("hidden", "");
       runBtn.textContent = "Browse";
+      renderSearchMeta();
+      persistDocsState();
       return;
     }
 
@@ -622,16 +852,18 @@
     runBtn.textContent = mode === "vector" ? "Vector search" : "Search";
 
     if (mode === "search") {
-      hint.textContent = "JSON search expression. Ctrl+Space completes operators, fields, and index names. Ctrl+Enter runs it.";
+      hint.textContent = "JSON search expression. Ctrl+Space completes operators (including join in compound.filter / mustNot), fields, and index names. Ctrl+Enter runs it. Alt+Shift+F indents.";
       if ($("#docs-query").dataset.autofill !== "custom") {
         $("#docs-query").value = DEFAULT_QUERY;
         $("#docs-query").dataset.autofill = "search";
       }
       syncQueryEditor();
+      renderSearchMeta();
+      persistDocsState();
       return;
     }
 
-    hint.textContent = "Vector search expression. queryVector length must match numDimensions. filter is an MQL document on filter fields.";
+    hint.textContent = "Vector search expression. queryVector length must match numDimensions. filter is an MQL document on filter fields. Alt+Shift+F indents.";
     if ($("#docs-query").dataset.autofill !== "custom") {
       $("#docs-query").value = `{
   "path": "embedding",
@@ -642,6 +874,8 @@
       $("#docs-query").dataset.autofill = "vector";
     }
     syncQueryEditor();
+    renderSearchMeta();
+    persistDocsState();
   }
 
   async function startDocsQuery() {
@@ -666,9 +900,13 @@
       page: 1,
       vector,
     };
-    if (!browsing) body.query = query;
+    if (!browsing) {
+      body.query = query;
+      const explain = $("#docs-explain")?.value || "";
+      if (explain) body.explain = explain;
+    }
 
-    const result = await api(path, {
+    const result = await timedQuery(path, {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -681,7 +919,8 @@
     state.docs.activeCursor = result.cursor_id || null;
     state.docs.loading = false;
     renderResultsPage();
-    toast(`${result.count} on page 1`);
+    if (result.explain && result.explain_verbosity === "query_planner") toast("Query plan ready");
+    else toast(`${result.count} on page 1`);
   }
 
   async function docsNextPage() {
@@ -702,7 +941,7 @@
     state.docs.loading = true;
     updatePager();
     const pageSize = Number($("#docs-page-size").value || current.page_size || 25);
-    const result = await api("/api/query/more", {
+    const result = await timedQuery("/api/query/more", {
       method: "POST",
       body: JSON.stringify({
         cursor_id: cursorId,
@@ -731,11 +970,13 @@
   }
 
   function switchPanel(name) {
+    if (!PANEL_META[name]) return;
     $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${name}`));
     $$("#nav button").forEach((btn) => btn.classList.toggle("active", btn.dataset.panel === name));
     const [title, subtitle] = PANEL_META[name];
     $("#panel-title").textContent = title;
     $("#panel-subtitle").textContent = subtitle;
+    persistDocsState();
   }
 
   function bindEvents() {
@@ -748,9 +989,10 @@
 
     $("#index-type").addEventListener("change", (event) => {
       if ($("#index-edit-id").value) return;
-      $("#index-definition").value = event.target.value === "VECTOR_SEARCH"
-        ? DEFAULT_VECTOR_DEFINITION
-        : DEFAULT_SEARCH_DEFINITION;
+      const vector = event.target.value === "VECTOR_SEARCH";
+      const editor = definitionEditor();
+      editor.mode = vector ? "VECTOR_SEARCH" : "SEARCH";
+      editor.value = vector ? DEFAULT_VECTOR_DEFINITION : DEFAULT_SEARCH_DEFINITION;
     });
 
     $("#index-reset").addEventListener("click", setIndexFormDefaults);
@@ -759,9 +1001,9 @@
       event.preventDefault();
       let definition;
       try {
-        definition = JSON.parse($("#index-definition").value);
-      } catch {
-        toast("Definition must be valid JSON", "error");
+        definition = definitionEditor().getDefinition();
+      } catch (err) {
+        toast(err.message, "error");
         return;
       }
 
@@ -833,9 +1075,21 @@
     $$("#docs-mode-tabs .mode-tab").forEach((btn) => {
       btn.addEventListener("click", () => setDocsMode(btn.dataset.mode));
     });
+    $("#docs-meta-expand").addEventListener("click", () => {
+      $$("#docs-meta-tree details").forEach((node) => {
+        node.open = true;
+      });
+    });
+    $("#docs-meta-collapse").addEventListener("click", () => {
+      $$("#docs-meta-tree details").forEach((node) => {
+        node.open = false;
+      });
+    });
     $("#docs-index").addEventListener("change", () => {
+      pendingDocsIndexId = "";
       syncQueryEditor();
       writeIndexKeyFromSelect();
+      persistDocsState();
     });
     $("#docs-query").addEventListener("index-change", (event) => {
       const select = $("#docs-index");
@@ -854,6 +1108,14 @@
     });
     $("#docs-query").addEventListener("input", () => {
       $("#docs-query").dataset.autofill = "custom";
+      persistDocsState();
+    });
+    $("#docs-query").addEventListener("formatted", () => persistDocsState());
+    $("#docs-query-indent").addEventListener("click", () => {
+      const editor = queryEditor();
+      if (!editor) return;
+      editor.indent();
+      editor.focus();
     });
     $("#run-docs-query").addEventListener("click", () => {
       startDocsQuery().catch((e) => {
@@ -878,10 +1140,34 @@
       });
     });
     $("#docs-page-size").addEventListener("change", () => {
+      persistDocsState();
       if (state.docs.pages.length) {
         startDocsQuery().catch((e) => toast(e.message, "error"));
       }
     });
+    $("#docs-explain")?.addEventListener("change", () => persistDocsState());
+
+    function syncDeleteQueryForm() {
+      const selector = $("#delete-query-selector")?.value || "search";
+      const wrap = $("#delete-query-text-wrap");
+      const hint = $("#delete-query-hint");
+      const dry = $("#delete-query-dry")?.checked !== false;
+      const submit = $("#delete-query-submit");
+      if (wrap) wrap.hidden = selector === "match_all";
+      if (hint) {
+        hint.textContent = selector === "vector"
+          ? "MQL metadata filter for a vector index. This is the filter document, not a vector search expression."
+          : "Search expression. An optional index key is ignored.";
+      }
+      if (submit) {
+        submit.textContent = dry ? "Count matches" : "Delete matches";
+        submit.classList.toggle("secondary", dry);
+        submit.classList.toggle("danger", !dry);
+      }
+    }
+    syncDeleteQueryForm();
+    $("#delete-query-selector")?.addEventListener("change", syncDeleteQueryForm);
+    $("#delete-query-dry")?.addEventListener("change", syncDeleteQueryForm);
 
     $("#upsert-form").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -924,6 +1210,77 @@
       }
     });
 
+    $("#delete-query-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const indexId = $("#delete-query-index").value;
+      if (!indexId) {
+        toast("Select an index first", "error");
+        return;
+      }
+      const selector = $("#delete-query-selector").value;
+      const dry = $("#delete-query-dry").checked;
+      const rawMax = $("#delete-query-max").value.trim();
+      const maxMatches = rawMax === "" ? 0 : Number(rawMax);
+      if (!Number.isInteger(maxMatches) || maxMatches < 0) {
+        toast("Max matches must be a non-negative integer", "error");
+        return;
+      }
+      const body = { dry_run: dry, max_matches: maxMatches };
+      if (selector === "match_all") {
+        body.match_all = true;
+      } else {
+        try {
+          body.query = JSON.parse($("#delete-query").value || "{}");
+        } catch {
+          toast("Predicate must be valid JSON", "error");
+          return;
+        }
+        if (!body.query || typeof body.query !== "object" || Array.isArray(body.query)) {
+          toast("Predicate must be a JSON object", "error");
+          return;
+        }
+        body.vector = selector === "vector";
+      }
+      if (!dry) {
+        const limit = maxMatches || 10000;
+        const ok = confirm(`Delete up to ${limit} matching documents from this index? A failed call can still remove a prefix.`);
+        if (!ok) return;
+      }
+      try {
+        const result = await api(`/api/indexes/${encodeURIComponent(indexId)}/delete-by-query`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        const matched = result.matched_count ?? 0;
+        toast(dry ? `Dry run matched ${matched}` : `Matched ${matched}, processed ${result.processed_count}`);
+        if (!dry && $("#docs-index").value === indexId && state.docs.pages.length) {
+          await startDocsQuery();
+        }
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      const reload = event.key === "F5" || ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "r");
+      if (!reload || !docsSessionDirty()) return;
+      event.preventDefault();
+      if (!confirm("Reload this page? The search query and results are saved in this tab.")) return;
+      allowUnload = true;
+      persistDocsState();
+      window.location.reload();
+    });
+    window.addEventListener("beforeunload", (event) => {
+      persistDocsState();
+      if (allowUnload || !docsSessionDirty()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
+    window.addEventListener("pagehide", () => persistDocsState());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") persistDocsState();
+    });
+
     $("#docs-results").addEventListener("click", async (event) => {
       const toggle = event.target.closest("button[data-action='toggle-json']");
       if (toggle) {
@@ -949,12 +1306,98 @@
     });
   }
 
+  function readDocsSession() {
+    try {
+      const raw = sessionStorage.getItem(DOCS_SESSION_KEY);
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
+      if (!["browse", "search", "vector"].includes(saved.mode)) saved.mode = "browse";
+      if (!PANEL_META[saved.panel]) saved.panel = "";
+      return saved;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistDocsState() {
+    if (!sessionReady) return;
+    const editor = $("#docs-query");
+    const payload = {
+      panel: $("#nav button.active")?.dataset.panel || "overview",
+      mode: state.docs.mode,
+      indexId: pendingDocsIndexId || $("#docs-index")?.value || "",
+      pageSize: $("#docs-page-size")?.value || "25",
+      query: editor ? editor.value : "",
+      autofill: editor?.dataset.autofill || "",
+      explain: $("#docs-explain")?.value || "",
+      pageIndex: state.docs.pageIndex,
+      nextCursor: state.docs.nextCursor,
+      activeCursor: state.docs.activeCursor,
+      pages: state.docs.pages,
+    };
+    const slim = { ...payload, pages: [], pageIndex: -1, nextCursor: null, activeCursor: null };
+    for (const attempt of [payload, slim]) {
+      try {
+        sessionStorage.setItem(DOCS_SESSION_KEY, JSON.stringify(attempt));
+        return;
+      } catch {
+        // Storage can reject a large result set. The next attempt keeps the query only.
+      }
+    }
+  }
+
+  function docsSessionDirty() {
+    const editor = $("#docs-query");
+    if (editor?.dataset.autofill === "custom" && editor.value.trim()) return true;
+    return state.docs.pageIndex >= 0 && state.docs.pages.length > 0;
+  }
+
+  function restoreDocsResults(saved) {
+    const pages = Array.isArray(saved.pages)
+      ? saved.pages.filter((page) => page && typeof page === "object" && Array.isArray(page.results))
+      : [];
+    if (!pages.length) return;
+    state.docs.pages = pages;
+    const requested = Number.isInteger(saved.pageIndex) ? saved.pageIndex : 0;
+    state.docs.pageIndex = Math.min(Math.max(requested, 0), pages.length - 1);
+    state.docs.nextCursor = saved.nextCursor || pages[state.docs.pageIndex]?.cursor_id || null;
+    state.docs.activeCursor = saved.activeCursor || state.docs.nextCursor;
+    state.docs.loading = false;
+    renderResultsPage();
+  }
+
+  function applySavedDocsEditor(saved) {
+    const editor = $("#docs-query");
+    const pageSize = $("#docs-page-size");
+    if (saved.pageSize && pageSize && [...pageSize.options].some((option) => option.value === String(saved.pageSize))) {
+      pageSize.value = String(saved.pageSize);
+    }
+    const explain = $("#docs-explain");
+    if (explain && typeof saved.explain === "string" && [...explain.options].some((option) => option.value === saved.explain)) {
+      explain.value = saved.explain;
+    }
+    pendingDocsIndexId = typeof saved.indexId === "string" ? saved.indexId : "";
+    if (saved.autofill && editor) editor.dataset.autofill = saved.autofill;
+    setDocsMode(saved.mode || "browse");
+    if (editor && typeof saved.query === "string") editor.value = saved.query;
+    if (saved.autofill && editor) editor.dataset.autofill = saved.autofill;
+    restoreDocsResults(saved);
+  }
+
   async function boot() {
-    await customElements.whenDefined("mong-query-editor");
-    $("#index-definition").value = DEFAULT_SEARCH_DEFINITION;
+    await Promise.all([
+      customElements.whenDefined("mong-query-editor"),
+      customElements.whenDefined("mong-definition-editor"),
+    ]);
+    definitionEditor().mode = "SEARCH";
+    definitionEditor().value = DEFAULT_SEARCH_DEFINITION;
     $("#upsert-document").value = DEFAULT_DOCUMENT;
-    setDocsMode("browse");
+    const saved = readDocsSession();
+    if (saved) applySavedDocsEditor(saved);
+    else setDocsMode("browse");
     bindEvents();
+    sessionReady = true;
     try {
       await refreshAll();
     } catch (err) {
@@ -962,6 +1405,8 @@
       $("#connection-label").textContent = "Disconnected";
       toast(err.message, "error");
     }
+    if (saved?.panel) switchPanel(saved.panel);
+    persistDocsState();
   }
 
   boot();
