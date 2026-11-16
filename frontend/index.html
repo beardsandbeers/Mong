@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mong</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      (() => {
+        let theme = "light";
+        try {
+          const saved = JSON.parse(localStorage.getItem("mong.theme") || "null");
+          theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        } catch {}
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+  </head>
+  <body>
+    <mong-app></mong-app>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

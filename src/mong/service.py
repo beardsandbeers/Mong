@@ -21,7 +21,9 @@ from mong.serialize import (
     index_to_dict,
     message_to_dict,
     parse_json_document,
+    parse_json_value,
     python_to_jsonable,
+    results_to_jsonable,
     status_to_dict,
 )
 
@@ -78,6 +80,12 @@ class MongotService:
                 index["stats"] = by_id[index["index_id"]]
         return indexes
 
+    def list_index_definitions(self) -> list[dict[str, Any]]:
+        """Indexes with their definitions, without the per-index stats that need GetStatus."""
+        with create_client() as client:
+            response = client.list_indexes(api.ListIndexesRequest())
+        return [index_to_dict(idx) for idx in response.indexes]
+
     def get_index(self, index_id: str) -> dict[str, Any]:
         with create_client() as client:
             index = client.get_index(api.GetIndexRequest(index_id=index_id))
@@ -125,8 +133,9 @@ class MongotService:
         definition: dict[str, Any],
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        current = self.get_index(index_id)
-        revision = expected_revision if expected_revision is not None else current["desired_revision"]
+        revision = expected_revision
+        if revision is None:
+            revision = self.get_index(index_id)["desired_revision"]
         with create_client() as client:
             index = client.update_index(
                 api.UpdateIndexRequest(
@@ -143,8 +152,9 @@ class MongotService:
         *,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        current = self.get_index(index_id)
-        revision = expected_revision if expected_revision is not None else current["desired_revision"]
+        revision = expected_revision
+        if revision is None:
+            revision = self.get_index(index_id)["desired_revision"]
         with create_client() as client:
             index = client.drop_index(
                 api.DropIndexRequest(
@@ -251,7 +261,7 @@ class MongotService:
         with create_client() as client:
             response = client.delete(
                 index_id,
-                document_id,
+                parse_json_value(document_id),
                 concern=concern,
                 generation_id=generation_id,
             )
@@ -272,7 +282,7 @@ class MongotService:
         with create_client() as client:
             response = client.delete_many(
                 index_id,
-                document_ids,
+                [parse_json_value(item) for item in document_ids],
                 concern=concern,
                 generation_id=generation_id,
             )
@@ -309,7 +319,7 @@ class MongotService:
             raise ValueError("max_matches must be >= 0")
         predicate = None
         if not match_all:
-            predicate = dict(query or {})
+            predicate = parse_json_document(dict(query or {}))
             if not vector:
                 predicate.pop("index", None)
         with create_client() as client:
@@ -352,7 +362,7 @@ class MongotService:
             "page": page,
             "page_size": page_size,
             "count": len(results),
-            "results": python_to_jsonable(results),
+            "results": results_to_jsonable(results),
             "metadata": python_to_jsonable(metadata),
             "explain": python_to_jsonable(explained) if explained is not None else None,
             "explain_verbosity": verbosity,
@@ -378,7 +388,7 @@ class MongotService:
         page_size = max(1, min(int(batch_size), 1000))
         verbosity = explain_verbosity(explain)
         # `index` is an editor affordance. mongot receives the id on the request.
-        payload = dict(query)
+        payload = parse_json_document(dict(query))
         payload.pop("index", None)
         with create_client() as client:
             request = api.QueryRequest(
@@ -429,7 +439,7 @@ class MongotService:
             "page": 1,
             "page_size": page_size,
             "count": len(results),
-            "results": python_to_jsonable(results),
+            "results": results_to_jsonable(results),
             "metadata": python_to_jsonable(metadata),
             "explain": python_to_jsonable(explained) if explained is not None else None,
             "explain_verbosity": _EXPLAIN_NAMES.get(verbosity),

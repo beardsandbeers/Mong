@@ -41,21 +41,43 @@ Keep the server image and `mongot-standalone-client` on the same version. Collec
 
 ## Run the admin UI
 
+The UI is a static Vite + TypeScript + Lit app that Flask serves on the same origin as the API. The build output (`src/mong/web/dist/`) is gitignored, so build it once after cloning and again after frontend changes:
+
 ```powershell
+cd frontend
+npm install
+npm run build
+cd ..
 python -m mong
 ```
 
-Open [http://127.0.0.1:5050](http://127.0.0.1:5050).
+Open [http://127.0.0.1:5050](http://127.0.0.1:5050). Without a build, `/` shows these instructions. The previous UI stays available at [/legacy/](http://127.0.0.1:5050/legacy/) until the new one replaces it.
 
-The UI can:
+Options: `--port` (or `MONG_PORT`, default 5050) and `--debug` (or `MONG_DEBUG=1`; turns on the Flask debugger and reloader, off by default).
 
-- show instance status and live indexes
-- create / edit / drop search and vector indexes (names are instance-wide). The definition editor completes keys, field types, and analyzers for the selected index kind, and it flags definitions standalone mongot rejects. Ctrl+Enter submits the form.
-- browse all documents with cursor pagination (Browse mode has no query box; the index must store source)
-- search / vector-search with a JSON expression. The editor completes operators, field paths from the index definition and the fields mongot has actually indexed (`GET /api/indexes/<id>/mappings`), and index names. It flags mismatches such as `text` on a `token` field. An optional `"index"` key stays in sync with the index dropdown and is not sent to mongot. Explain (0.8) can be off, query planner, execution stats, or all plans. The planner returns the plan and no hits; execution levels return hits plus a cumulative explain document in Search meta.
-- upsert documents, delete by ID, and delete by query (0.8). Delete by query takes a search expression, a vector metadata filter, or match-all, bounded by max matches (0 means the server default of 10,000). Dry run is the default and only counts matches. A real delete can apply a prefix if the call fails or new documents arrive during the pass.
-- show per-index statistics (**Stats**): live and Lucene document counts, index and directory size, bytes per document, memory domains, and per-field disk attribution with the shared and unattributed storage buckets. Values marked `*` are partial measurements; hover for the method and omitted components. `—` means the server could not measure it.
-- export a dynamic search index's observed mapping as a static definition (**Export mapping**). It loads into the create form as `<name>_static`; create it and reingest the documents.
+For frontend development, run Flask and `npm run dev` in `frontend/`, then open [http://127.0.0.1:5173](http://127.0.0.1:5173). Vite proxies `/api` to Flask on port 5050 and rewrites `Origin` so writes pass the server's origin check.
+
+The UI has four areas:
+
+- **Dashboard**: instance health (management readiness, failure message, free disk), live tiles and charts for queries per second, failed queries, batch latency, ingest rate, RPCs in flight and queued, merges, and open cursors, an index health table, and alerts. Charts cover 5 minutes, 15 minutes, or 1 hour and mark restarts and rebuilds. History comes from a server-side sampler and is lost when Flask restarts.
+- **Indexes**: a list, a create wizard (dynamic search, static mapping, vector, a clone of an existing index, or an index's observed fields), and a page per index with these tabs:
+  - **Overview**: state, revisions, generation, and the index's charts.
+  - **Definition**: the definition editor with a diff against the loaded revision. Saving rebuilds an empty generation, so it asks you to type the index name. **Export observed mapping** creates a static copy.
+  - **Fields**: definition and observed mapping merged, with per-field disk and memory.
+  - **Storage**: counts, sizes, memory domains, and the shared and unattributed buckets. Values marked `*` are partial measurements; `—` means the server could not measure it. Statistics load on demand and are never polled.
+  - **Data**: Explore scoped to the index.
+  - **Danger zone**: delete by query (a dry-run count first, then the delete as a job), delete all documents (a job), and drop.
+- **Explore**: Browse, Search, and Vector modes, enabled by what the index supports. Browse needs stored source; Vector needs a vector index.
+  - **Query editor**: completes operators, field paths from the definition and the observed mapping, and index names, and flags mismatches such as `text` on a `token` field. An optional `"index"` key stays in sync with the index picker and is not sent to mongot. Drag the grip under it to resize; the height is remembered.
+  - **Results**: table, tree, or raw view, with load-more cursor paging, Count matches (adds `count: {type: "lowerBound"}`), and explain (plan, timings, or all plans) rendered as a tree.
+  - **Search meta**: the results header shows hits loaded, matches, and end-to-end and mongot latency per page. A Search meta card shows the full metadata (count, facets).
+  - **Document drawer**: edit (only when the index stores full source, since upsert replaces the document), delete, and **Find similar**, which builds a vector query from the document's stored embedding.
+  - **Also**: history and saved queries, a shareable URL, upsert, NDJSON or JSON-array import streamed from the browser, bulk delete of selected rows, and export of the loaded rows or of all matches as a job.
+- **Jobs**: clearing an index, large deletes by query, and exports run as server-side jobs with progress and cancel. They survive closing the tab but not a Flask restart, and only one mutating job runs per index at a time.
+
+Ctrl+K opens a command palette for jumping to indexes and actions. The Activity page is a placeholder.
+
+Documents travel as relaxed Extended JSON: `ObjectId`, dates, `Decimal128`, integers beyond 2^53, and whole-number doubles are tagged (`{"$oid"}`, `{"$date"}`, `{"$numberDouble"}`, ...) so an edited document keeps its types when it is written back.
 
 Documents live in the index. Updating an index definition rebuilds an empty generation, so the previous documents have to be loaded again. There is no collection catalog. Delete-by-query (0.8) selects ids and deletes them in batches; it is not a single atomic query.
 
@@ -134,35 +156,43 @@ The JSON report has pass/fail counts per shape and per relationship, plus up to 
 | --- | --- | --- |
 | `GET` | `/api/status` | Instance status (`?metrics=true` includes scrubbed metrics) |
 | `GET/POST` | `/api/indexes` | List / create indexes |
-| `GET/PUT/DELETE` | `/api/indexes/<id>` | Get / update / drop index |
+| `GET/PUT/DELETE` | `/api/indexes/<id>` | Get / update / drop index. Update and drop require `expected_revision`, the revision the client loaded |
 | `GET` | `/api/indexes/<id>/mappings` | Export observed mapping as a static definition (search indexes only) |
 | `GET` | `/api/indexes/<id>/stats` | Index statistics (`?refresh=true` starts a fresh collection) |
 | `GET` | `/api/indexes/<id>/field-stats` | Per-field statistics page (`refresh`, repeated `path`, `page_size` ≤ 500, `page_token`) |
 | `POST` | `/api/indexes/<id>/documents` | Upsert documents into the index |
 | `DELETE` | `/api/indexes/<id>/documents/<doc_id>` | Delete a document by `_id` |
+| `POST` | `/api/indexes/<id>/documents/delete` | Delete a list of `ids` (Extended JSON values) |
 | `POST` | `/api/indexes/<id>/delete-by-query` | Dry-run or delete a bounded search query, vector filter, or match-all |
 | `POST` | `/api/indexes/<id>/search` | Text or vector search (paged). Optional `explain`: `query_planner`, `execution_stats`, `all_plans_execution` |
 | `POST` | `/api/indexes/<id>/browse` | Browse all documents (paged) |
 | `POST` | `/api/query/more` | Fetch next cursor page |
 | `DELETE` | `/api/query/cursors/<cursor_id>` | Kill a query cursor |
+| `GET` | `/api/metrics/summary` | Current derived metrics per instance and index, plus alerts (`?refresh=true` samples now) |
+| `GET` | `/api/metrics/series` | Sampled history (`index`, `since` in epoch seconds) with restart and rebuild annotations |
+| `GET/POST` | `/api/jobs` | List jobs / start one (`kind`: `clear_index`, `delete_by_query`, `export`) |
+| `GET` | `/api/jobs/<id>` | Job progress and result |
+| `POST` | `/api/jobs/<id>/cancel` | Cancel a job |
+| `GET` | `/api/jobs/<id>/download` | Download a finished export (NDJSON or CSV) |
+
+gRPC errors map to HTTP statuses (for example `NOT_FOUND` is 404, and `ABORTED` and `FAILED_PRECONDITION` are 409, which is what a stale `expected_revision` returns) with the gRPC code in `code`.
+
+The server only answers loopback `Host` headers, which blocks DNS rebinding, and refuses writes with a foreign `Origin` or `Sec-Fetch-Site: cross-site`. There is no authentication, so keep it on `127.0.0.1`.
 
 Optional overrides:
 
 - `NOMONGOT_ADDRESS` (default `localhost:27029`)
 - `NOMONGOT_CREDENTIALS_DIR` (default `.nomongo-t`)
+- `MONG_PORT` (default `5050`) and `MONG_DEBUG` (default off)
+- `MONG_ALLOWED_HOSTS`: comma-separated extra hostnames to accept besides loopback
 
 The Python client dependency is `mongot-standalone-client` 0.8.0, matching the push-only mongot API (no collections), cross-index `join` filters, query explain, and delete-by-query. Bulk upserts default to write concern `indexed`. Delete-by-query defaults to `visible` and, in this admin API, to a dry run.
 
-## Query editor bundle
+## Frontend layout
 
-The search box uses a vendored CodeMirror build at `src/mong/web/static/vendor/codemirror.js`. Rebuild it only when upgrading CodeMirror:
+`frontend/src/` holds the app: `views/` (pages), `components/` (shared Lit elements, which render into light DOM so CodeMirror styles apply), `editors/` (the CodeMirror query, definition, and JSON editors, imported from npm), `lib/` (API client, Extended JSON, formatting, state), and `styles/`. `npm run build` type-checks and writes `src/mong/web/dist/`.
 
-```powershell
-cd frontend
-npm install
-npm run build:vendor
-npm test
-```
+The legacy UI at `/legacy/` still uses the vendored CodeMirror bundle at `src/mong/web/static/vendor/codemirror.js`; `npm run build:vendor` rebuilds it.
 
 ## Test
 
@@ -170,4 +200,7 @@ npm test
 pytest
 cd frontend
 npm test
+npm run typecheck
 ```
+
+`npm test` runs Vitest (editor completion and lint, the importer, and the editor resize grip).

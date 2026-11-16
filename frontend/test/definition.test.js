@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
-import { definitionCompletion } from "../../src/mong/web/static/js/query-editor/definition-complete.js";
-import { lintDefinition } from "../../src/mong/web/static/js/query-editor/definition-lint.js";
+import { definitionCompletion } from "../src/editors/definition-complete.js";
+import { lintDefinition } from "../src/editors/definition-lint.js";
 import { labels, withCursor } from "./helpers.js";
 
 const FIELD_PATHS = [

@@ -1,4 +1,4 @@
-import { EditorState, json } from "../../src/mong/web/static/vendor/codemirror.js";
+import { EditorState, json } from "../src/editors/codemirror.js";
 
 export function withCursor(text) {
   const pos = text.indexOf("|");

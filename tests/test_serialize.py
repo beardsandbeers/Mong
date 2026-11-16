@@ -1,14 +1,87 @@
+import datetime
+import json
 import math
 from types import SimpleNamespace
 
+from bson import Decimal128, Int64, ObjectId
 from mongot_standalone import api
 
 from mong.serialize import (
     attach_index_stats,
     index_mappings_to_dict,
     message_to_dict,
+    parse_json_document,
+    parse_json_value,
+    python_to_jsonable,
+    results_to_jsonable,
     status_to_dict,
 )
+
+
+def test_results_serialize_bson_types_as_extended_json() -> None:
+    oid = ObjectId("65a1b2c3d4e5f60718293a4b")
+    hits = [
+        {
+            "$searchScore": 2.0,
+            "storedSource": {
+                "_id": oid,
+                "created": datetime.datetime(2025, 1, 2, 3, 4, 5),
+                "price": Decimal128("1.10"),
+                "whole": 5.0,
+                "ratio": 0.5,
+                "count": 7,
+                "big": Int64(2**60),
+                "flag": True,
+            },
+        }
+    ]
+    payload = results_to_jsonable(hits)
+    json.dumps(payload)
+    doc = payload[0]["storedSource"]
+    assert payload[0]["$searchScore"] == 2.0
+    assert doc["_id"] == {"$oid": str(oid)}
+    assert doc["created"] == {"$date": "2025-01-02T03:04:05Z"}
+    assert doc["price"] == {"$numberDecimal": "1.10"}
+    assert doc["whole"] == {"$numberDouble": "5.0"}
+    assert doc["ratio"] == 0.5
+    assert doc["count"] == 7
+    assert doc["big"] == {"$numberLong": str(2**60)}
+    assert doc["flag"] is True
+
+
+def test_extended_json_round_trips_through_a_write() -> None:
+    original = {
+        "_id": ObjectId("65a1b2c3d4e5f60718293a4b"),
+        "created": datetime.datetime(2025, 1, 2, 3, 4, 5),
+        "price": Decimal128("1.10"),
+        "whole": 5.0,
+        "count": 7,
+        "big": Int64(2**60),
+    }
+    sent = json.loads(json.dumps(results_to_jsonable([{"storedSource": original}])[0]["storedSource"]))
+    decoded = parse_json_document(sent)
+    assert decoded == original
+    assert isinstance(decoded["whole"], float)
+    assert isinstance(decoded["count"], int)
+    assert isinstance(decoded["_id"], ObjectId)
+
+
+def test_definitions_stay_plain_json() -> None:
+    definition = {"fields": [{"type": "vector", "numDimensions": 3, "boost": 2.0}]}
+    assert python_to_jsonable(definition) == definition
+
+
+def test_parse_json_value_decodes_ids_and_keeps_scalars() -> None:
+    assert parse_json_value({"$oid": "65a1b2c3d4e5f60718293a4b"}) == ObjectId("65a1b2c3d4e5f60718293a4b")
+    assert parse_json_value("abc") == "abc"
+    assert parse_json_value(12) == 12
+
+
+def test_queries_keep_mql_operators() -> None:
+    query = {"filter": {"price": {"$gte": 5}}, "created": {"$date": "2025-01-02T03:04:05Z"}}
+    decoded = parse_json_document(query)
+    assert decoded["filter"] == {"price": {"$gte": 5}}
+    assert decoded["created"] == datetime.datetime(2025, 1, 2, 3, 4, 5)
 
 
 def test_message_to_dict_keeps_unavailable_distinct_from_zero() -> None:

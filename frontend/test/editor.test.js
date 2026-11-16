@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
-import { formatJson } from "../../src/mong/web/static/js/query-editor/json-editor.js";
-import { contextAt } from "../../src/mong/web/static/js/query-editor/context.js";
-import { queryCompletion } from "../../src/mong/web/static/js/query-editor/complete.js";
-import { lintQuery } from "../../src/mong/web/static/js/query-editor/lint.js";
+import { formatJson } from "../src/editors/json-editor.js";
+import { contextAt } from "../src/editors/context.js";
+import { queryCompletion } from "../src/editors/complete.js";
+import { lintQuery } from "../src/editors/lint.js";
 import { labels, withCursor } from "./helpers.js";
 
 const INDEXES = [

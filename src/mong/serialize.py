@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
@@ -33,15 +34,63 @@ def bson_to_python(data: bytes | None) -> Any:
     return decode_bson(data)
 
 
-def python_to_jsonable(value: Any) -> Any:
-    """Round-trip through bson.json_util so ObjectId/datetime/etc survive."""
-    return json_util.loads(json_util.dumps(value))
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _tag_values(value: Any, *, tag_doubles: bool) -> Any:
+    """Tag values JavaScript cannot represent: large integers, and optionally whole doubles."""
+    if isinstance(value, dict):
+        return {key: _tag_values(item, tag_doubles=tag_doubles) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_tag_values(item, tag_doubles=tag_doubles) for item in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and abs(value) > _MAX_SAFE_INTEGER:
+        return {"$numberLong": str(value)}
+    if tag_doubles and isinstance(value, float) and value.is_integer():
+        return {"$numberDouble": repr(value)}
+    return value
+
+
+def python_to_jsonable(value: Any, *, tag_doubles: bool = False) -> Any:
+    """Relaxed Extended JSON as plain JSON values (``{"$oid"}``, ``{"$date"}``, ...).
+
+    ``tag_doubles`` marks whole-number doubles as ``{"$numberDouble"}`` because
+    JavaScript cannot tell ``5.0`` from ``5``; use it for documents that may be edited
+    and written back.
+    """
+    plain = json.loads(json_util.dumps(value, json_options=json_util.RELAXED_JSON_OPTIONS))
+    return _tag_values(plain, tag_doubles=tag_doubles)
+
+
+def results_to_jsonable(results: list[Any]) -> list[Any]:
+    """Search hits with document values type-tagged. Top-level ``$`` keys are search metadata."""
+    out = []
+    for hit in results:
+        if not isinstance(hit, dict):
+            out.append(python_to_jsonable(hit, tag_doubles=True))
+            continue
+        out.append(
+            {
+                key: python_to_jsonable(item, tag_doubles=not key.startswith("$"))
+                for key, item in hit.items()
+            }
+        )
+    return out
 
 
 def parse_json_document(raw: str | dict | list) -> Any:
+    """Decode Extended JSON (``{"$oid"}``, ``{"$date"}``, ``{"$numberDouble"}``, ...) to BSON values."""
     if isinstance(raw, (dict, list)):
         return json_util.loads(json_util.dumps(raw))
     return json_util.loads(raw)
+
+
+def parse_json_value(raw: Any) -> Any:
+    """Decode one Extended JSON value, such as a document id."""
+    if isinstance(raw, (dict, list)):
+        return json_util.loads(json_util.dumps(raw))
+    return raw
 
 
 def index_to_dict(index: api.IndexDescription) -> dict[str, Any]:

@@ -17,13 +17,118 @@ def test_javascript_modules_use_a_javascript_mime_type() -> None:
     assert response.mimetype == "text/javascript"
 
 
-def test_index_page_served() -> None:
+def test_legacy_page_served() -> None:
     app = create_app()
     client = app.test_client()
-    response = client.get("/")
+    response = client.get("/legacy/")
     assert response.status_code == 200
     assert b"Mong Admin" in response.data
     assert b"mong-query-editor" in response.data
+
+
+def test_root_serves_build_or_explains_how_to_build(monkeypatch, tmp_path) -> None:
+    from mong.web import app as web_app
+
+    monkeypatch.setattr(web_app, "DIST_DIR", tmp_path)
+    client = web_app.create_app().test_client()
+    missing = client.get("/")
+    assert missing.status_code == 503
+    assert b"npm run build" in missing.data
+
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<mong-app></mong-app>", encoding="utf-8")
+    (tmp_path / "assets" / "app.js").write_text("export {};", encoding="utf-8")
+    client = web_app.create_app().test_client()
+    assert b"mong-app" in client.get("/").data
+    asset = client.get("/assets/app.js")
+    assert asset.status_code == 200
+    assert asset.mimetype == "text/javascript"
+
+
+def test_guard_rejects_foreign_host_header() -> None:
+    client = create_app().test_client()
+    assert client.get("/api/health", headers={"Host": "evil.example:5050"}).status_code == 403
+    assert client.get("/api/health", headers={"Host": "127.0.0.1:5050"}).status_code == 200
+    assert client.get("/api/health", headers={"Host": "[::1]:5050"}).status_code == 200
+
+
+def test_guard_allows_extra_hosts_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("MONG_ALLOWED_HOSTS", "mong.internal")
+    client = create_app().test_client()
+    assert client.get("/api/health", headers={"Host": "mong.internal:5050"}).status_code == 200
+
+
+def test_guard_rejects_cross_origin_writes(monkeypatch) -> None:
+    from mong.web import api as web_api
+
+    monkeypatch.setattr(web_api.service, "drop_index", lambda index_id, **kwargs: {"index_id": index_id})
+    client = create_app().test_client()
+    host = {"Host": "127.0.0.1:5050"}
+    body = {"expected_revision": 3}
+
+    evil = client.delete("/api/indexes/idx-1", json=body, headers={**host, "Origin": "https://evil.example"})
+    assert evil.status_code == 403
+    opaque = client.delete("/api/indexes/idx-1", json=body, headers={**host, "Origin": "null"})
+    assert opaque.status_code == 403
+    cross = client.delete("/api/indexes/idx-1", json=body, headers={**host, "Sec-Fetch-Site": "cross-site"})
+    assert cross.status_code == 403
+    same = client.delete("/api/indexes/idx-1", json=body, headers={**host, "Origin": "http://127.0.0.1:5050"})
+    assert same.status_code == 200
+    scripted = client.delete("/api/indexes/idx-1", json=body, headers=host)
+    assert scripted.status_code == 200
+    reads = client.get("/api/health", headers={**host, "Origin": "https://evil.example"})
+    assert reads.status_code == 200
+
+
+def test_update_and_drop_require_expected_revision(monkeypatch) -> None:
+    from mong.web import api as web_api
+
+    calls = {}
+
+    def fake_update(index_id, **kwargs):
+        calls["update"] = kwargs
+        return {"index_id": index_id}
+
+    def fake_drop(index_id, **kwargs):
+        calls["drop"] = kwargs
+        return {"index_id": index_id}
+
+    monkeypatch.setattr(web_api.service, "update_index", fake_update)
+    monkeypatch.setattr(web_api.service, "drop_index", fake_drop)
+    client = create_app().test_client()
+
+    assert client.put("/api/indexes/idx-1", json={"definition": {}}).status_code == 400
+    assert client.delete("/api/indexes/idx-1", json={}).status_code == 400
+    assert client.delete("/api/indexes/idx-1", json={"expected_revision": True}).status_code == 400
+    assert "update" not in calls and "drop" not in calls
+
+    assert client.put("/api/indexes/idx-1", json={"definition": {}, "expected_revision": "4"}).status_code == 200
+    assert calls["update"]["expected_revision"] == 4
+    assert client.delete("/api/indexes/idx-1", json={"expected_revision": 4}).status_code == 200
+    assert calls["drop"]["expected_revision"] == 4
+
+
+def test_rpc_errors_map_to_http_status(monkeypatch) -> None:
+    import grpc
+
+    from mong.web import api as web_api
+
+    class _Conflict(grpc.RpcError):
+        def code(self):
+            return grpc.StatusCode.FAILED_PRECONDITION
+
+        def details(self):
+            return "revision mismatch"
+
+    def fake_update(index_id, **kwargs):
+        raise _Conflict()
+
+    monkeypatch.setattr(web_api.service, "update_index", fake_update)
+    response = create_app().test_client().put(
+        "/api/indexes/idx-1", json={"definition": {}, "expected_revision": 1}
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {"error": "revision mismatch", "code": "FAILED_PRECONDITION"}
 
 
 def test_search_strips_editor_index_key(monkeypatch) -> None:
@@ -144,6 +249,40 @@ def test_field_stats_never_refreshes_later_pages(monkeypatch) -> None:
 
     MongotService().field_stats("idx-1", refresh=True, page_token="tok")
     assert seen == {"refresh": False, "token": "tok"}
+
+
+def test_search_route_serializes_object_ids_and_decimals(monkeypatch) -> None:
+    from bson import Decimal128, ObjectId
+    from mongot_standalone import encode_bson
+
+    oid = ObjectId("65a1b2c3d4e5f60718293a4b")
+
+    class _Response:
+        batch_bson = encode_bson(
+            {"results": [{"$searchScore": 1.0, "storedSource": {"_id": oid, "price": Decimal128("2.50")}}]}
+        )
+        metadata_bson = b""
+        explain_bson = b""
+        cursor_id = 0
+        generation_id = "gen"
+
+    class _Client:
+        def search(self, request):
+            return _Response()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr("mong.service.create_client", lambda: _Client())
+    client = create_app().test_client()
+    response = client.post("/api/indexes/idx-1/search", json={"query": {"exists": {"path": "_id"}}})
+
+    assert response.status_code == 200
+    doc = response.get_json()["results"][0]["storedSource"]
+    assert doc == {"_id": {"$oid": str(oid)}, "price": {"$numberDecimal": "2.50"}}
 
 
 def test_stats_routes_pass_query_args(monkeypatch) -> None:

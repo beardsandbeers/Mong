@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from grpc import RpcError
 
+from mong.jobs import JobConflict, JobManager
+from mong.metrics import MetricsSampler
 from mong.service import MongotService
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 service = MongotService()
+sampler = MetricsSampler(
+    lambda: service.status(include_metrics=True),
+    fetch_indexes=lambda: service.list_index_definitions(),
+)
+jobs = JobManager(service)
 
 
 def _error(message: str, status: int = 400, **extra: Any):
@@ -18,16 +26,41 @@ def _error(message: str, status: int = 400, **extra: Any):
     return jsonify(payload), status
 
 
+_RPC_STATUS = {
+    "INVALID_ARGUMENT": 400,
+    "OUT_OF_RANGE": 400,
+    "NOT_FOUND": 404,
+    "ALREADY_EXISTS": 409,
+    "ABORTED": 409,
+    "FAILED_PRECONDITION": 409,
+    "RESOURCE_EXHAUSTED": 429,
+    "UNAVAILABLE": 503,
+    "DEADLINE_EXCEEDED": 504,
+}
+
+
 def _from_rpc(exc: Exception):
+    if isinstance(exc, JobConflict):
+        return _error(str(exc), 409, code="JOB_CONFLICT")
     if isinstance(exc, FileNotFoundError):
-        return _error(str(exc), 503)
+        return _error(str(exc), 503, code="CREDENTIALS_MISSING")
     if isinstance(exc, ValueError):
-        return _error(str(exc), 400)
+        return _error(str(exc), 400, code="INVALID_ARGUMENT")
     if isinstance(exc, RpcError):
         details = exc.details() if hasattr(exc, "details") else str(exc)
         code = exc.code().name if hasattr(exc, "code") else "UNKNOWN"
-        return _error(details or str(exc), 502, code=code)
-    return _error(str(exc), 500)
+        return _error(details or str(exc), _RPC_STATUS.get(code, 502), code=code)
+    return _error(str(exc), 500, code="INTERNAL")
+
+
+def _revision(body: dict[str, Any]) -> int | None:
+    value = body.get("expected_revision")
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _flag(name: str) -> bool:
@@ -87,11 +120,14 @@ def update_index(index_id: str):
     definition = body.get("definition")
     if definition is None:
         return _error("definition is required")
+    revision = _revision(body)
+    if revision is None:
+        return _error("expected_revision is required (the revision the definition was loaded from)")
     try:
         index = service.update_index(
             index_id,
             definition=definition,
-            expected_revision=body.get("expected_revision"),
+            expected_revision=revision,
         )
         return jsonify(index)
     except Exception as exc:
@@ -101,10 +137,13 @@ def update_index(index_id: str):
 @api_bp.delete("/indexes/<index_id>")
 def drop_index(index_id: str):
     body = request.get_json(silent=True) or {}
+    revision = _revision(body)
+    if revision is None:
+        return _error("expected_revision is required (the revision the index was loaded at)")
     try:
         index = service.drop_index(
             index_id,
-            expected_revision=body.get("expected_revision"),
+            expected_revision=revision,
         )
         return jsonify(index)
     except Exception as exc:
@@ -171,6 +210,24 @@ def upsert_documents(index_id: str):
             generation_id=body.get("generation_id") or "",
         )
         return jsonify(result), 201
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.post("/indexes/<index_id>/documents/delete")
+def delete_documents(index_id: str):
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return _error("ids must be a non-empty array")
+    try:
+        result = service.delete_documents(
+            index_id,
+            ids,
+            concern=body.get("concern") or "visible",
+            generation_id=body.get("generation_id") or "",
+        )
+        return jsonify(result)
     except Exception as exc:
         return _from_rpc(exc)
 
@@ -286,4 +343,71 @@ def kill_cursor(cursor_id: str):
         return jsonify(service.kill_cursor(cursor_id))
     except Exception as exc:
         return _from_rpc(exc)
+
+
+@api_bp.get("/metrics/summary")
+def metrics_summary():
+    sampler.ensure_started()
+    if _flag("refresh"):
+        sampler.sample_once(min_gap=2.0)
+    return jsonify(sampler.summary())
+
+
+@api_bp.get("/metrics/series")
+def metrics_series():
+    sampler.ensure_started()
+    since_arg = request.args.get("since")
+    try:
+        since = float(since_arg) if since_arg else None
+    except ValueError:
+        return _error("since must be a number (epoch seconds)")
+    return jsonify(sampler.series(index_id=request.args.get("index") or None, since=since))
+
+
+@api_bp.get("/jobs")
+def list_jobs():
+    return jsonify({"jobs": jobs.list()})
+
+
+@api_bp.post("/jobs")
+def create_job():
+    body = request.get_json(silent=True) or {}
+    params = {key: value for key, value in body.items() if key not in ("kind", "index_id")}
+    try:
+        job = jobs.create(str(body.get("kind") or ""), str(body.get("index_id") or ""), params)
+        return jsonify(job.to_dict()), 202
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.get("/jobs/<job_id>")
+def get_job(job_id: str):
+    job = jobs.get(job_id)
+    if job is None:
+        return _error("job not found (jobs are lost when the server restarts)", 404, code="NOT_FOUND")
+    return jsonify(job.to_dict())
+
+
+@api_bp.post("/jobs/<job_id>/cancel")
+def cancel_job(job_id: str):
+    job = jobs.cancel(job_id)
+    if job is None:
+        return _error("job not found", 404, code="NOT_FOUND")
+    return jsonify(job.to_dict())
+
+
+@api_bp.get("/jobs/<job_id>/download")
+def download_job(job_id: str):
+    job = jobs.get(job_id)
+    if job is None or job.path is None or not job.path.exists():
+        return _error("no export file for this job", 404, code="NOT_FOUND")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(job.finished_at or time.time()))
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in job.index_name)
+    mimetype = "text/csv" if job.path.suffix == ".csv" else "application/x-ndjson"
+    return send_file(
+        job.path,
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=f"{safe_name}-{stamp}{job.path.suffix}",
+    )
 

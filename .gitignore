@@ -50,5 +50,6 @@ Thumbs.db
 # Leftover local collection registry from the 0.2 admin API
 .mong-admin/
 
-# CodeMirror vendor build (the bundle under static/vendor is committed)
+# Frontend dependencies and build output (run `npm run build` in frontend/)
 frontend/node_modules/
+src/mong/web/dist/

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 
 import {
   FieldIndex,
   clearMappingCache,
   loadMappings,
   typesCompatible,
-} from "../../src/mong/web/static/js/query-editor/fields.js";
+} from "../src/editors/fields.js";
 
 test("flattens static, multi-type, nested, and multi-analyzer fields", () => {
   const index = FieldIndex.compile({

@@ -1,0 +1,95 @@
+:root {
+  --font-body: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --sidebar-width: 232px;
+  --topbar-height: 56px;
+  --row-height: 34px;
+
+  --accent: #0f8a7a;
+  --accent-strong: #0b6f62;
+  --accent-soft: rgba(15, 138, 122, 0.14);
+  --accent-ink: #ffffff;
+
+  --ok: #1f9d55;
+  --ok-soft: rgba(31, 157, 85, 0.14);
+  --warn: #c27c0e;
+  --warn-soft: rgba(194, 124, 14, 0.15);
+  --danger: #d1453b;
+  --danger-soft: rgba(209, 69, 59, 0.13);
+  --info: #2f6fdb;
+  --info-soft: rgba(47, 111, 219, 0.13);
+
+  --chart-1: #0f8a7a;
+  --chart-2: #2f6fdb;
+  --chart-3: #c27c0e;
+  --chart-4: #9b51e0;
+  --chart-5: #d1453b;
+  --chart-6: #1f9d55;
+  --chart-7: #e0679b;
+  --chart-8: #5a6b7c;
+}
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #f7f9fa;
+  --surface-3: #eef2f4;
+  --ink: #17202a;
+  --ink-2: #364350;
+  --muted: #677585;
+  --line: #e1e6ea;
+  --line-strong: #cbd3da;
+  --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 4px 16px rgba(16, 24, 32, 0.06);
+  --shadow-lg: 0 12px 40px rgba(16, 24, 32, 0.18);
+  --overlay: rgba(15, 20, 25, 0.38);
+  --editor-bg: #fbfcfd;
+  --editor-gutter: #f3f6f8;
+  --hover: rgba(16, 24, 32, 0.045);
+  --selected: rgba(15, 138, 122, 0.09);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1318;
+  --surface: #151b22;
+  --surface-2: #1a2129;
+  --surface-3: #212a33;
+  --ink: #e5eaef;
+  --ink-2: #c3ccd5;
+  --muted: #8d9aa7;
+  --line: #26303a;
+  --line-strong: #34404c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --overlay: rgba(0, 0, 0, 0.55);
+  --editor-bg: #11171d;
+  --editor-gutter: #151c23;
+  --hover: rgba(255, 255, 255, 0.04);
+  --selected: rgba(23, 178, 157, 0.14);
+  --accent: #17b29d;
+  --accent-strong: #33c7b2;
+  --accent-soft: rgba(23, 178, 157, 0.18);
+  --accent-ink: #04211d;
+  --chart-1: #17b29d;
+  --chart-2: #5b8ff0;
+  --chart-3: #e2a03a;
+  --chart-4: #b07cf0;
+  --chart-5: #ef6b61;
+  --chart-6: #3fc27a;
+  --chart-7: #f08ab5;
+  --chart-8: #8797a8;
+}
