@@ -371,6 +371,26 @@ export function readJson(state) {
   return value ? readValue(value, state.doc) : null;
 }
 
+/** Foreign index names in the query, including while an operator is still being typed. */
+export function joinIndexNames(state) {
+  const names = new Set();
+  function visit(node) {
+    if (node?.kind === "array") {
+      for (const item of node.items) visit(item);
+    } else if (node?.kind === "object") {
+      for (const property of node.properties) {
+        if (property.key === "join" && property.value?.kind === "object") {
+          const from = property.value.properties.find((item) => item.key === "from");
+          if (from?.value?.kind === "string" && from.value.value) names.add(from.value.value);
+        }
+        visit(property.value);
+      }
+    }
+  }
+  visit(readJson(state));
+  return names;
+}
+
 export function rootIndexName(state) {
   const doc = readJson(state);
   if (!doc || doc.kind !== "object") return null;

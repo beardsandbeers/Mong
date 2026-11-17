@@ -25,13 +25,21 @@ const STATUS_TONES: Record<string, Tone> = {
 /** One status for an index from its lifecycle state, revisions, and status metric. */
 export function indexStatus(index: IndexInfo | SummaryIndex): IndexStatus {
   const label = (index as SummaryIndex).metrics?.status_label ?? null;
-  if (index.failure_message) {
-    return { tone: "danger", label: "Failed", detail: index.failure_message };
+  const sourceStatus = String(index.source_status || "").toUpperCase();
+  if (sourceStatus.startsWith("RECOVER")) {
+    return {
+      tone: STATUS_TONES[sourceStatus] ?? "warn",
+      label: "Recovering",
+      detail: index.failure_message || `Index status ${sourceStatus}`,
+    };
   }
   const lifecycle = String(index.lifecycle_state || "").toUpperCase();
+  if (index.failure_message && (lifecycle.includes("FAIL") || sourceStatus.includes("FAIL"))) {
+    return { tone: "danger", label: "Failed", detail: index.failure_message };
+  }
   if (lifecycle && lifecycle !== "READY") {
     const tone: Tone = STATUS_TONES[lifecycle] ?? (lifecycle.includes("FAIL") ? "danger" : "info");
-    return { tone, label: titleCase(lifecycle), detail: `Lifecycle state ${lifecycle}` };
+    return { tone, label: titleCase(lifecycle), detail: index.failure_message || `Lifecycle state ${lifecycle}` };
   }
   if (index.desired_revision !== index.active_revision) {
     return {

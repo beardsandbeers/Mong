@@ -3,6 +3,7 @@ import { LightElement } from "../components/base";
 import type { Column } from "../components/data-table";
 import { confirmDialog, openDialog } from "../components/dialog";
 import "../components/explain-tree";
+import { originBadge } from "../components/index-origin";
 import { icon } from "../components/icons";
 import { toast } from "../components/toast";
 import { FieldIndex, loadMappings } from "../editors/fields.js";
@@ -10,6 +11,7 @@ import { startJob } from "../lib/actions";
 import { track } from "../lib/activity";
 import { api, errorMessage } from "../lib/api";
 import { capabilities, type Capabilities } from "../lib/capabilities";
+import { originLabel } from "../lib/origin";
 import { download, toCsv, toNdjson } from "../lib/csv";
 import { columnsFor, displayValue, getPath, prettyJson, sortValue } from "../lib/ejson";
 import { formatMs, formatNumber, pluralize, relativeTime } from "../lib/format";
@@ -498,6 +500,56 @@ export class MongExplore extends LightElement {
     return query;
   }
 
+  async runMeta(): Promise<void> {
+    const index = this.index;
+    if (!index || this.running || this.mode !== "search") return;
+    let query: Record<string, unknown>;
+    try {
+      query = this.buildQuery();
+    } catch (error) {
+      this.error = errorMessage(error);
+      return;
+    }
+    this.flushDraft();
+    this.abortRun();
+    this.releaseCursor();
+    const controller = new AbortController();
+    this.controller = controller;
+    this.running = true;
+    this.error = null;
+    const text = this.text;
+    const started = performance.now();
+    try {
+      const page = await api.searchMeta(
+        index.index_id,
+        { query, explain: this.prefs.explain || undefined },
+        controller.signal,
+      );
+      const e2e = performance.now() - started;
+      this.hits = [];
+      this.metadata = page.metadata;
+      this.explainOut = page.explain;
+      this.explainVerbosity = page.explain_verbosity ?? this.prefs.explain;
+      this.cursorId = null;
+      this.hasMore = false;
+      this.pageNo = 1;
+      this.timings = [{ page: 1, hits: 0, e2e, mongot: page.latency_ms ?? null }];
+      this.selected = new Set();
+      this.ranQuery = { index, mode: "search", query };
+      this.remember({ index: index.name, mode: "search", query: text, hits: 0, ms: page.latency_ms ?? e2e, ok: true });
+    } catch (error) {
+      if ((error as Error)?.name === "AbortError") return;
+      this.clearResults();
+      this.error = errorMessage(error);
+      this.remember({ index: index.name, mode: "search", query: text, hits: 0, ms: null, ok: false });
+    } finally {
+      if (this.controller === controller) {
+        this.controller = null;
+        this.running = false;
+      }
+    }
+  }
+
   async run(): Promise<void> {
     const index = this.index;
     if (!index || this.running) return;
@@ -847,12 +899,12 @@ export class MongExplore extends LightElement {
 
   private indexOptions(): TemplateResult {
     const option = (index: SummaryIndex) =>
-      html`<option value=${index.name} ?selected=${index.name === this.indexName}>${index.name}</option>`;
-    const managed = this.indexes.filter((index) => capabilities(index).readOnly);
-    if (!managed.length) return html`${this.indexes.map(option)}`;
-    const standalone = this.indexes.filter((index) => !capabilities(index).readOnly);
+      html`<option value=${index.name} ?selected=${index.name === this.indexName}>${originLabel(index)} · ${index.name}</option>`;
+    const coupled = this.indexes.filter((index) => originLabel(index) === "Coupled");
+    if (!coupled.length) return html`${this.indexes.map(option)}`;
+    const standalone = this.indexes.filter((index) => originLabel(index) === "Standalone");
     return html`${standalone.length ? html`<optgroup label="Standalone">${standalone.map(option)}</optgroup>` : nothing}
-      <optgroup label="Managed by MongoDB">${managed.map(option)}</optgroup>`;
+      <optgroup label="Coupled">${coupled.map(option)}</optgroup>`;
   }
 
   private renderRail(caps: Capabilities): TemplateResult {
@@ -865,7 +917,7 @@ export class MongExplore extends LightElement {
         ? nothing
         : html`<div class="card">
             <div class="card__body stack" style="gap:8px">
-              <label class="label" for="explore-index">Index</label>
+              <label class="label row" for="explore-index">Index ${this.index ? originBadge(this.index) : nothing}</label>
               <select id="explore-index" .value=${this.indexName} @change=${(e: Event) => this.select((e.target as HTMLSelectElement).value)}>
                 ${this.indexOptions()}
               </select>
@@ -1017,6 +1069,11 @@ export class MongExplore extends LightElement {
           ${this.running
             ? html`<button class="btn secondary" @click=${() => this.cancel()}>${icon("stop", 14)} Cancel</button>`
             : nothing}
+          ${this.mode === "search"
+            ? html`<button class="btn secondary" title="Facet and count metadata, with no hits" ?disabled=${!this.index || this.running} @click=${() => this.runMeta()}>
+                ${icon("activity", 14)} Meta
+              </button>`
+            : nothing}
           <button class="btn" ?disabled=${!this.index || this.running} @click=${() => this.run()}>
             ${icon("play", 14)} ${this.running ? "Running…" : "Run"} <span class="kbd">Ctrl ↵</span>
           </button>
@@ -1071,7 +1128,7 @@ export class MongExplore extends LightElement {
         ${hasTree
           ? html`<mong-json-tree class="search-meta-tree" .value=${metadata} expand-depth="3"></mong-json-tree>`
           : html`<p class="hint" style="margin:0">
-              This query returned no metadata. Add <code>count</code> (or turn on Count matches) or a <code>facet</code> collector to get totals and buckets here.
+              This query returned no metadata. Add <code>count</code> or a <code>facet</code> collector, or run Meta for a metadata-only query.
             </p>`}
         ${this.timings.length > 1
           ? html`<table class="table compact">
@@ -1243,7 +1300,13 @@ export class MongExplore extends LightElement {
       </div>
       <div class="card__body">
         ${this.explainView === "tree"
-          ? html`<mong-explain-tree .explain=${this.explainOut}></mong-explain-tree>`
+          ? html`<mong-explain-tree
+              .explain=${this.explainOut}
+              .query=${this.ranQuery?.query ?? null}
+              .indexName=${this.ranQuery?.index.name ?? ""}
+              .requestMillis=${this.timings.at(-1)?.mongot ?? null}
+              .resultCount=${countOf(this.metadata)}
+            ></mong-explain-tree>`
           : html`<pre class="raw" style="max-height:420px;overflow:auto;margin:0">${prettyJson(this.explainOut)}</pre>`}
       </div>
     </div>`;

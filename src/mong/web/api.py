@@ -131,6 +131,7 @@ def update_index(index_id: str):
             index_id,
             definition=definition,
             expected_revision=revision,
+            update_mode_name=body.get("update_mode") or "auto",
         )
         return jsonify(index)
     except Exception as exc:
@@ -305,6 +306,27 @@ def search(index_id: str):
             page=int(body.get("page") or 1),
             drain=bool(body.get("drain")),
             max_batches=int(body.get("max_batches") or 20),
+            generation_id=body.get("generation_id") or "",
+            explain=explain,
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.post("/indexes/<index_id>/search-meta")
+def search_meta(index_id: str):
+    body = request.get_json(silent=True) or {}
+    query = body.get("query")
+    if not isinstance(query, dict):
+        return _error("query must be an object")
+    explain = body.get("explain") or ""
+    if not isinstance(explain, str):
+        return _error("explain must be a string")
+    try:
+        result = service.search_meta(
+            index_id,
+            query,
             generation_id=body.get("generation_id") or "",
             explain=explain,
         )

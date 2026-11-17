@@ -5,6 +5,7 @@ import { toast } from "../components/toast";
 import { track } from "../lib/activity";
 import { api, errorMessage } from "../lib/api";
 import { capabilities } from "../lib/capabilities";
+import { originLabel } from "../lib/origin";
 import { prettyJson } from "../lib/ejson";
 import { navigate } from "../lib/router";
 import { appStore, indexByName, refreshSummary } from "../lib/state";
@@ -340,7 +341,7 @@ export class MongIndexCreate extends LightElement {
               <select id="source-index" .value=${this.source} @change=${(e: Event) => (this.source = (e.target as HTMLSelectElement).value)}>
                 <option value="">Choose an index…</option>
                 ${this.sourceOptions(template.needsSource).map(
-                  (index) => html`<option value=${index.name} ?selected=${index.name === this.source}>${index.name} (${index.type === "VECTOR_SEARCH" ? "vector" : "search"})</option>`,
+                  (index) => html`<option value=${index.name} ?selected=${index.name === this.source}>${originLabel(index)} · ${index.name}</option>`,
                 )}
               </select>
               ${template.id === "observed"

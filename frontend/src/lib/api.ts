@@ -6,6 +6,7 @@ import type {
   MetricsSeries,
   MetricsSummary,
   QueryPage,
+  UpdateMode,
   WriteConcern,
   WriteResult,
 } from "./types";
@@ -130,10 +131,11 @@ export const api = {
   index: (indexId: string) => request<IndexInfo>("GET", `/api/indexes/${id(indexId)}`),
   createIndex: (name: string, type: IndexType, definition: unknown) =>
     request<IndexInfo>("POST", "/api/indexes", { name, type, definition }),
-  updateIndex: (indexId: string, definition: unknown, expectedRevision: number) =>
+  updateIndex: (indexId: string, definition: unknown, expectedRevision: number, updateMode: UpdateMode = "auto") =>
     request<IndexInfo>("PUT", `/api/indexes/${id(indexId)}`, {
       definition,
       expected_revision: expectedRevision,
+      update_mode: updateMode,
     }),
   dropIndex: (indexId: string, expectedRevision: number) =>
     request<IndexInfo>("DELETE", `/api/indexes/${id(indexId)}`, { expected_revision: expectedRevision }),
@@ -162,6 +164,8 @@ export const api = {
     request<DeleteByQueryResult>("POST", `/api/indexes/${id(indexId)}/delete-by-query`, body),
   search: (indexId: string, body: SearchRequest, signal?: AbortSignal) =>
     request<QueryPage>("POST", `/api/indexes/${id(indexId)}/search`, body, { signal }),
+  searchMeta: (indexId: string, body: SearchRequest, signal?: AbortSignal) =>
+    request<QueryPage>("POST", `/api/indexes/${id(indexId)}/search-meta`, body, { signal }),
   browse: (indexId: string, body: { batch_size: number; count?: boolean }, signal?: AbortSignal) =>
     request<QueryPage>("POST", `/api/indexes/${id(indexId)}/browse`, body, { signal }),
   more: (cursorId: string, indexId: string, batchSize: number, page: number, signal?: AbortSignal) =>

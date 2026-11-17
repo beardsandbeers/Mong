@@ -93,8 +93,75 @@ def parse_json_value(raw: Any) -> Any:
     return raw
 
 
+_OWNERSHIP_NAMES = {}
+_VERSION_DOMAINS = {}
+
+
+def _ownership_names() -> dict[int, str]:
+    if not _OWNERSHIP_NAMES and hasattr(api, "INDEX_OWNERSHIP_STANDALONE"):
+        _OWNERSHIP_NAMES[api.INDEX_OWNERSHIP_STANDALONE] = "standalone"
+        _OWNERSHIP_NAMES[api.INDEX_OWNERSHIP_REPLICATED] = "replicated"
+    return _OWNERSHIP_NAMES
+
+
+def _version_domains() -> dict[int, str]:
+    if not _VERSION_DOMAINS and hasattr(api, "IndexVersion"):
+        _VERSION_DOMAINS[api.IndexVersion.DOMAIN_STANDALONE_REVISION] = "standalone_revision"
+        _VERSION_DOMAINS[api.IndexVersion.DOMAIN_NATIVE_DEFINITION_VERSION] = "native_definition"
+    return _VERSION_DOMAINS
+
+
+def _has_field(message: Any, name: str) -> bool:
+    has = getattr(message, "HasField", None)
+    if has is None:
+        return False
+    try:
+        return bool(has(name))
+    except ValueError:
+        return False
+
+
+def _version_dict(version: Any) -> dict[str, Any] | None:
+    if version is None:
+        return None
+    domain = int(getattr(version, "domain", 0) or 0)
+    number = int(getattr(version, "definition_version", 0) or 0)
+    if domain == 0 and number == 0:
+        return None
+    return {"domain": _version_domains().get(domain, str(domain)), "version": number}
+
+
+def _namespace_dict(namespace: Any) -> dict[str, Any] | None:
+    if namespace is None:
+        return None
+    data = {
+        "database": getattr(namespace, "database", "") or None,
+        "collection": getattr(namespace, "collection_name", "") or None,
+        "collection_uuid": getattr(namespace, "collection_uuid", "") or None,
+        "view": getattr(namespace, "view_name", "") or None,
+    }
+    if not any(data.values()):
+        return None
+    return data
+
+
+def _build_dict(build: Any) -> dict[str, Any] | None:
+    if build is None:
+        return None
+    state = getattr(build, "state", "") or None
+    generation_id = getattr(build, "generation_id", "") or None
+    version = _version_dict(getattr(build, "version", None))
+    if not state and not generation_id and version is None:
+        return None
+    return {"generation_id": generation_id, "state": state, "version": version}
+
+
 def index_to_dict(index: api.IndexDescription) -> dict[str, Any]:
     definition = bson_to_python(index.desired_definition_bson)
+    active_raw = getattr(index, "active_definition_bson", b"") or b""
+    active = bson_to_python(active_raw) if active_raw else None
+    ownership = _ownership_names().get(int(getattr(index, "ownership", 0) or 0))
+    capabilities = [item for item in (getattr(index, "read_capabilities", []) or []) if item]
     return {
         "index_id": index.index_id,
         "name": index.name,
@@ -107,6 +174,15 @@ def index_to_dict(index: api.IndexDescription) -> dict[str, Any]:
         "generation_id": index.generation_id or None,
         "failure_message": index.failure_message or None,
         "definition": python_to_jsonable(definition) if definition is not None else None,
+        "active_definition": python_to_jsonable(active) if active is not None else None,
+        "ownership": ownership,
+        "namespace": _namespace_dict(index.namespace) if _has_field(index, "namespace") else None,
+        "queryable": bool(getattr(index, "queryable", False)),
+        "read_capabilities": capabilities,
+        "active_version": _version_dict(index.active_version) if _has_field(index, "active_version") else None,
+        "desired_version": _version_dict(index.desired_version) if _has_field(index, "desired_version") else None,
+        "build": _build_dict(index.build) if _has_field(index, "build") else None,
+        "source_status": getattr(index, "source_status", "") or None,
     }
 
 

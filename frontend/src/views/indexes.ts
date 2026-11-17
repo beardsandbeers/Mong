@@ -1,10 +1,12 @@
 import { html, nothing } from "lit";
 import { LightElement } from "../components/base";
 import type { Column } from "../components/data-table";
+import { originBadge } from "../components/index-origin";
 import { icon } from "../components/icons";
 import { indexStatus, statusPill } from "../components/status-pill";
 import { dropIndexFlow } from "../lib/actions";
-import { capabilities, namespaceOf } from "../lib/capabilities";
+import { capabilities } from "../lib/capabilities";
+import { indexLabel, isCoupled } from "../lib/origin";
 import { formatBytes, formatMs, formatNumber, formatRate } from "../lib/format";
 import { href, navigate } from "../lib/router";
 import { appStore } from "../lib/state";
@@ -16,7 +18,7 @@ type TypeFilter = "all" | "SEARCH" | "VECTOR_SEARCH";
 type StatusFilter = "all" | "ok" | "attention";
 type SourceFilter = "all" | "mongot" | "mongod";
 
-const sourceOf = (index: SummaryIndex) => index.source ?? "mongot";
+const managed = (index: SummaryIndex) => isCoupled(index);
 
 export class MongIndexes extends LightElement {
   static properties = {
@@ -62,7 +64,8 @@ export class MongIndexes extends LightElement {
         return false;
       }
       if (this.typeFilter !== "all" && index.type !== this.typeFilter) return false;
-      if (this.sourceFilter !== "all" && sourceOf(index) !== this.sourceFilter) return false;
+      if (this.sourceFilter === "mongod" && !managed(index)) return false;
+      if (this.sourceFilter === "mongot" && managed(index)) return false;
       if (this.statusFilter !== "all") {
         const ok = indexStatus(index).tone === "ok";
         if (this.statusFilter === "ok" ? !ok : ok) return false;
@@ -78,9 +81,8 @@ export class MongIndexes extends LightElement {
         key: "name",
         label: "Name",
         pinned: true,
-        render: (row) => html`<a href=${href(["indexes", row.name])} @click=${(e: Event) => e.stopPropagation()}>${namespaceOf(row)
-            ? html`<span class="muted">${namespaceOf(row)}/</span>${row.index_name}`
-            : row.name}</a>
+        render: (row) => html`<a href=${href(["indexes", row.name])} @click=${(e: Event) => e.stopPropagation()}>${indexLabel(row)}</a>
+          ${originBadge(row)}
           ${this.app.value.recreated.includes(row.name)
             ? html`<span class="badge" title="Dropped and recreated during this session; saved queries and history may refer to the old index">recreated</span>`
             : nothing}`,
@@ -93,11 +95,8 @@ export class MongIndexes extends LightElement {
       {
         key: "source",
         label: "Source",
-        render: (row) =>
-          sourceOf(row) === "mongod"
-            ? html`<span class="badge" title="MongoDB manages this index on a collection; Mong browses and queries it">MongoDB</span>`
-            : html`<span class="badge" title="Standalone index managed through nomongo-t's API">standalone</span>`,
-        sortValue: (row) => sourceOf(row),
+        render: (row) => originBadge(row),
+        sortValue: (row) => (isCoupled(row) ? "coupled" : "standalone"),
       },
       { key: "status", label: "Status", render: (row) => statusPill(row), sortValue: (row) => indexStatus(row).label },
       {
@@ -182,7 +181,7 @@ export class MongIndexes extends LightElement {
     const { indexes, loaded } = this.app.value;
     const rows = this.filtered();
     const vectors = indexes.filter((index) => index.type === "VECTOR_SEARCH").length;
-    const managed = indexes.filter((index) => sourceOf(index) === "mongod").length;
+    const managedCount = indexes.filter((index) => managed(index)).length;
     const attention = indexes.filter((index) => indexStatus(index).tone !== "ok").length;
     return html`<div class="page">
       <div class="page__head">
@@ -190,7 +189,7 @@ export class MongIndexes extends LightElement {
           <h1>Indexes</h1>
           <div class="hint">
             ${formatNumber(indexes.length)} total · ${formatNumber(indexes.length - vectors)} search ·
-            ${formatNumber(vectors)} vector${managed ? ` · ${formatNumber(managed)} managed by MongoDB` : ""}${attention
+            ${formatNumber(vectors)} vector${managedCount ? ` · ${formatNumber(managedCount)} from MongoDB` : ""}${attention
               ? html` · <span style="color:var(--warn)">${attention} need attention</span>`
               : nothing}
           </div>
@@ -229,7 +228,7 @@ export class MongIndexes extends LightElement {
                 [
                   ["all", "All sources"],
                   ["mongot", "Standalone"],
-                  ["mongod", "MongoDB"],
+                  ["mongod", "Coupled"],
                 ] as const
               ).map(
                 ([value, label]) => html`<button aria-pressed=${this.sourceFilter === value ? "true" : "false"} @click=${() => this.setSource(value)}>${label}</button>`,

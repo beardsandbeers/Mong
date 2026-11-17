@@ -2,6 +2,8 @@ import { html, nothing, type TemplateResult } from "lit";
 import { LightElement } from "../components/base";
 import type { ChartSeries } from "../components/chart";
 import type { Column } from "../components/data-table";
+import { originBadge } from "../components/index-origin";
+import { originLabel } from "../lib/origin";
 import { icon } from "../components/icons";
 import { indexStatus, statusPill } from "../components/status-pill";
 import { capabilities } from "../lib/capabilities";
@@ -177,6 +179,7 @@ export class MongDashboard extends LightElement {
         label: "Index",
         pinned: true,
         render: (row) => html`<a href=${href(["indexes", row.name])} @click=${(e: Event) => e.stopPropagation()}>${row.name}</a>
+          ${originBadge(row)}
           ${row.type === "VECTOR_SEARCH" ? html`<span class="badge">vector</span>` : nothing}`,
       },
       {
@@ -283,7 +286,7 @@ export class MongDashboard extends LightElement {
     const t = times(samples);
     const markers = this.series.markers(samples);
     const perIndex = (key: keyof IndexMetrics): ChartSeries[] =>
-      indexes.map((index) => ({ label: index.name, values: indexValues(samples, index.index_id, key) }));
+      indexes.map((index) => ({ label: `${originLabel(index)} · ${index.name}`, values: indexValues(samples, index.index_id, key) }));
     const ops = rpcOperations(samples).filter((op) => !RPC_HIDDEN.has(op));
     const rpcRate: ChartSeries[] = ops.map((op) => ({ label: op, values: rpcValues(samples, op, "rate") }));
     const rpcErrors: ChartSeries[] = ops

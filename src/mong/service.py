@@ -44,6 +44,107 @@ _EXPLAIN_NAMES = {
     api.EXPLAIN_VERBOSITY_ALL_PLANS_EXECUTION: "all_plans_execution",
 }
 
+_UPDATE_MODES = {
+    "auto": api.INDEX_UPDATE_MODE_AUTO,
+    "preserve": api.INDEX_UPDATE_MODE_REQUIRE_PRESERVE,
+    "rebuild": api.INDEX_UPDATE_MODE_REBUILD_EMPTY,
+}
+
+_DIRECT_READ = "direct read contract"
+
+
+def update_mode(value: str | None) -> int:
+    """Map a definition-save choice onto the 0.10 IndexUpdateMode enum."""
+    key = (value or "auto").strip().lower().replace("-", "_")
+    try:
+        return _UPDATE_MODES[key]
+    except KeyError:
+        raise ValueError("update_mode must be auto, preserve, or rebuild") from None
+
+
+def _unsupported_direct_read(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and _DIRECT_READ in str(exc)
+
+
+def _page_token(response: Any) -> str:
+    token = getattr(response, "next_page_token", "") or ""
+    return token if isinstance(token, str) else ""
+
+
+def list_index_pages(client: Any) -> list[Any]:
+    """Every index the server will list, including replicated ones on 0.10.
+
+    Pagination asks the server to acknowledge the direct-read contract. An older
+    server rejects that, and the unpaged list is used instead.
+    """
+    try:
+        request = api.ListIndexesRequest(page_size=200)
+        indexes: list[Any] = []
+        while True:
+            response = client.list_indexes(request)
+            indexes.extend(response.indexes)
+            token = _page_token(response)
+            if not token:
+                return indexes
+            request = api.ListIndexesRequest(page_size=200, page_token=token)
+    except RuntimeError as exc:
+        if not _unsupported_direct_read(exc):
+            raise
+        return list(client.list_indexes(api.ListIndexesRequest()).indexes)
+
+
+def query_has_join(query: Any) -> bool:
+    if isinstance(query, dict):
+        join = query.get("join")
+        if isinstance(join, dict) and join.get("from"):
+            return True
+        return any(query_has_join(value) for value in query.values())
+    if isinstance(query, list):
+        return any(query_has_join(item) for item in query)
+    return False
+
+
+def join_bindings(query: Any, indexes: list[dict[str, Any]]) -> list[Any]:
+    """Bind each join ``from`` name to an index id when that name is unique.
+
+    0.10 uses these bindings to read a joined index directly. Ambiguous names are
+    left for the server to resolve.
+    """
+    names: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            join = node.get("join")
+            if isinstance(join, dict) and isinstance(join.get("from"), str) and join["from"]:
+                names.append(join["from"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(query)
+    by_name: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for index in indexes:
+        name = index.get("name")
+        index_id = index.get("index_id")
+        if not name or not index_id or name in ambiguous:
+            continue
+        if name in by_name and by_name[name] != index_id:
+            ambiguous.add(name)
+            by_name.pop(name, None)
+            continue
+        by_name[name] = index_id
+    seen: set[str] = set()
+    bindings = []
+    for name in names:
+        if name in seen or name not in by_name:
+            continue
+        seen.add(name)
+        bindings.append(api.JoinIndexBinding(alias=name, index_id=by_name[name]))
+    return bindings
+
 
 def explain_verbosity(value: str | None) -> int:
     """Map an explain name onto the 0.8 QueryRequest enum. Blank means off."""
@@ -77,8 +178,8 @@ class MongotService:
 
     def list_indexes(self) -> list[dict[str, Any]]:
         with create_client() as client:
-            response = client.list_indexes(api.ListIndexesRequest())
-        indexes = [index_to_dict(idx) for idx in response.indexes]
+            listed = list_index_pages(client)
+        indexes = [index_to_dict(idx) for idx in listed]
         by_id = {item["index_id"]: item.get("stats") for item in self.status()["indexes"]}
         for index in indexes:
             if index["index_id"] in by_id:
@@ -88,8 +189,8 @@ class MongotService:
     def list_index_definitions(self) -> list[dict[str, Any]]:
         """Indexes with their definitions, without the per-index stats that need GetStatus."""
         with create_client() as client:
-            response = client.list_indexes(api.ListIndexesRequest())
-        return [index_to_dict(idx) for idx in response.indexes]
+            listed = list_index_pages(client)
+        return [index_to_dict(idx) for idx in listed]
 
     def get_index(self, index_id: str) -> dict[str, Any]:
         with create_client() as client:
@@ -137,16 +238,19 @@ class MongotService:
         *,
         definition: dict[str, Any],
         expected_revision: int | None = None,
+        update_mode_name: str = "auto",
     ) -> dict[str, Any]:
         revision = expected_revision
         if revision is None:
             revision = self.get_index(index_id)["desired_revision"]
+        mode = update_mode(update_mode_name)
         with create_client() as client:
             index = client.update_index(
                 api.UpdateIndexRequest(
                     index_id=index_id,
                     expected_revision=revision,
                     definition_bson=encode_bson(definition),
+                    update_mode=mode,
                 )
             )
         return index_to_dict(index)
@@ -395,6 +499,7 @@ class MongotService:
         # `index` is an editor affordance. mongot receives the id on the request.
         payload = parse_json_document(dict(query))
         payload.pop("index", None)
+        bindings = join_bindings(payload, self.list_index_definitions()) if query_has_join(payload) else []
         with create_client() as client:
             request = api.QueryRequest(
                 index_id=index_id,
@@ -402,8 +507,25 @@ class MongotService:
                 batch_size=page_size,
                 generation_id=generation_id,
                 explain_verbosity=verbosity,
+                join_indexes=bindings,
             )
-            response = client.vector_search(request) if vector else client.search(request)
+
+            def run(current: Any) -> Any:
+                return client.vector_search(current) if vector else client.search(current)
+
+            try:
+                response = run(request)
+            except RuntimeError as exc:
+                if not bindings or not _unsupported_direct_read(exc):
+                    raise
+                request = api.QueryRequest(
+                    index_id=index_id,
+                    query_bson=encode_bson(payload),
+                    batch_size=page_size,
+                    generation_id=generation_id,
+                    explain_verbosity=verbosity,
+                )
+                response = run(request)
 
             if not drain:
                 page_result = self._query_page_from_response(
@@ -477,6 +599,60 @@ class MongotService:
         )
         page_result["latency_ms"] = _elapsed_ms(started)
         return page_result
+
+    def search_meta(
+        self,
+        index_id: str,
+        query: dict[str, Any],
+        *,
+        generation_id: str = "",
+        explain: str = "",
+    ) -> dict[str, Any]:
+        """Facet and count metadata with no hits. Requires a server that has SearchMeta."""
+        started = time.perf_counter()
+        verbosity = explain_verbosity(explain)
+        payload = parse_json_document(dict(query))
+        payload.pop("index", None)
+        bindings = join_bindings(payload, self.list_index_definitions()) if query_has_join(payload) else []
+        with create_client() as client:
+            request = api.SearchMetaRequest(
+                index_id=index_id,
+                query_bson=encode_bson(payload),
+                generation_id=generation_id,
+                explain_verbosity=verbosity,
+                target_index_id=index_id,
+                join_indexes=bindings,
+            )
+            try:
+                response = client.search_meta(request)
+            except RuntimeError as exc:
+                if not _unsupported_direct_read(exc):
+                    raise
+                response = client.search_meta(
+                    api.SearchMetaRequest(
+                        index_id=index_id,
+                        query_bson=encode_bson(payload),
+                        generation_id=generation_id,
+                        explain_verbosity=verbosity,
+                    )
+                )
+        metadata = bson_to_python(response.metadata_bson) if response.metadata_bson else None
+        explain_bson = getattr(response, "explain_bson", b"") or b""
+        explained = bson_to_python(explain_bson) if explain_bson else None
+        return {
+            "index_id": index_id,
+            "page": 1,
+            "page_size": 0,
+            "count": 0,
+            "results": [],
+            "metadata": python_to_jsonable(metadata),
+            "explain": python_to_jsonable(explained) if explained is not None else None,
+            "explain_verbosity": _EXPLAIN_NAMES.get(verbosity),
+            "generation_id": response.generation_id or "",
+            "cursor_id": None,
+            "has_more": False,
+            "latency_ms": _elapsed_ms(started),
+        }
 
     def kill_cursor(self, cursor_id: str | int) -> dict[str, Any]:
         with create_client() as client:

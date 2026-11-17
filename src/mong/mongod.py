@@ -1,8 +1,8 @@
 """Search indexes that MongoDB manages, read through mongod.
 
-``createSearchIndex`` on a collection creates these. nomongo-t builds them from
-replication, and its standalone API does not list them, so Mong lists them with
-``$listSearchIndexes`` and queries them with ``$search`` and ``$vectorSearch``.
+``createSearchIndex`` on a collection creates these. nomongo-t 0.10 lists the
+replicated copies itself; this module is the fallback when that list is empty,
+and it queries them with ``$search`` and ``$vectorSearch``.
 Mong only reads them: documents change in the collection, and definitions change
 through MongoDB.
 
@@ -423,6 +423,50 @@ class MongodSearch:
         result.update(metadata=metadata, explain=explained, explain_verbosity=verbosity, latency_ms=_elapsed_ms(started))
         return result
 
+    def search_meta(
+        self,
+        index_id: str,
+        query: dict[str, Any],
+        *,
+        generation_id: str = "",
+        explain: str = "",
+    ) -> dict[str, Any]:
+        """``$searchMeta`` for a MongoDB-managed index. No hits are returned."""
+        del generation_id
+        started = time.perf_counter()
+        database_name, collection_name, name = parse_index_id(index_id)
+        verbosity = explain_name(explain)
+        payload = parse_json_document(dict(query))
+        payload.pop("index", None)
+        with self._mongod():
+            database = self._db()[database_name]
+            collection = database[collection_name]
+            explained = None
+            if verbosity:
+                stage = {key: value for key, value in payload.items() if key not in _HIT_OPTIONS}
+                stage["index"] = name
+                raw = database.command(
+                    "explain",
+                    {"aggregate": collection_name, "pipeline": [{"$searchMeta": stage}], "cursor": {}},
+                    verbosity=_EXPLAIN_VERBOSITY[verbosity],
+                )
+                explained = _explain_document(raw)
+            metadata = None if verbosity == "query_planner" else self._search_meta(collection, name, payload)
+        return {
+            "index_id": index_id,
+            "page": 1,
+            "page_size": 0,
+            "count": 0,
+            "results": [],
+            "metadata": metadata,
+            "explain": explained,
+            "explain_verbosity": verbosity or None,
+            "generation_id": "",
+            "cursor_id": None,
+            "has_more": False,
+            "latency_ms": _elapsed_ms(started),
+        }
+
     @staticmethod
     def _search_meta(collection: Any, name: str, payload: dict[str, Any]) -> Any:
         stage = {key: value for key, value in payload.items() if key not in _HIT_OPTIONS}
@@ -586,20 +630,42 @@ def alerts(state: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
-def merge_summary(summary: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """A metrics summary with MongoDB-managed indexes and their alerts added.
+def _coupled_key(index: dict[str, Any]) -> tuple[str, str, str] | None:
+    """``(database, collection, index name)`` for one physical search index."""
+    namespace = index.get("namespace") or {}
+    database = namespace.get("database") or index.get("database")
+    collection = namespace.get("collection") or index.get("collection")
+    name = index.get("index_name") or index.get("name")
+    if database and collection and name and "/" not in str(name):
+        return (str(database), str(collection), str(name))
+    return None
 
-    nomongo-t reports no metrics for these indexes; ``documents`` is the collection's count.
+
+def merge_summary(summary: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Add MongoDB-managed indexes nomongo-t did not already report.
+
+    A replicated index and the ``$listSearchIndexes`` entry for the same
+    collection index are one index. The collection document count fills in
+    when nomongo-t has no document gauge for it.
     """
-    indexes = [
-        {**index, "metrics": {"documents": (index.get("stats") or {}).get("documents"), "status_label": None}}
-        for index in state["indexes"]
-    ]
+    listed = [dict(index) for index in summary.get("indexes") or []]
+    by_key = {key: index for index in listed if (key := _coupled_key(index))}
+    extras: list[dict[str, Any]] = []
+    for index in state.get("indexes") or []:
+        documents = (index.get("stats") or {}).get("documents")
+        match = by_key.get(_coupled_key(index) or ("", "", ""))
+        if match is not None:
+            metrics = dict(match.get("metrics") or {})
+            if metrics.get("documents") is None and documents is not None:
+                metrics["documents"] = documents
+                match["metrics"] = metrics
+            continue
+        extras.append({**index, "metrics": {"documents": documents, "status_label": None}})
     merged = [*summary.get("alerts", []), *alerts(state)]
     merged.sort(key=lambda alert: _SEVERITY_ORDER.get(alert["severity"], 3))
     return {
         **summary,
-        "indexes": [*summary.get("indexes", []), *indexes],
+        "indexes": [*listed, *extras],
         "alerts": merged,
         "mongod": {key: state[key] for key in ("enabled", "connected", "error")},
     }

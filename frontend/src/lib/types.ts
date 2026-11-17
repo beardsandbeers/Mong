@@ -30,7 +30,17 @@ export interface IndexInfo {
   index_name?: string;
   queryable?: boolean;
   mongot_id?: string | null;
+  /** 0.10: `standalone` or `replicated`. Replicated indexes are queried through nomongo-t. */
+  ownership?: "standalone" | "replicated" | null;
+  namespace?: { database?: string | null; collection?: string | null; view?: string | null } | null;
+  read_capabilities?: string[];
+  source_status?: string | null;
+  active_version?: { domain: string; version: number } | null;
+  desired_version?: { domain: string; version: number } | null;
+  build?: { generation_id: string | null; state: string | null; version: { domain: string; version: number } | null } | null;
 }
+
+export type UpdateMode = "auto" | "preserve" | "rebuild";
 
 export interface IndexMetrics {
   status_label: string | null;

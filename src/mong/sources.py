@@ -28,7 +28,22 @@ class SearchService(MongotService):
         self.mongod = mongod or MongodSearch()
 
     def list_indexes(self) -> list[dict[str, Any]]:
-        return super().list_indexes() + self.mongod.list_indexes()
+        mongot_indexes = super().list_indexes()
+        replicated = {
+            (
+                (index.get("namespace") or {}).get("database"),
+                (index.get("namespace") or {}).get("collection"),
+                index.get("name"),
+            )
+            for index in mongot_indexes
+            if index.get("ownership") == "replicated"
+        }
+        extra = [
+            index
+            for index in self.mongod.list_indexes()
+            if (index.get("database"), index.get("collection"), index.get("index_name")) not in replicated
+        ]
+        return mongot_indexes + extra
 
     def get_index(self, index_id: str) -> dict[str, Any]:
         if is_index_id(index_id):
@@ -44,6 +59,11 @@ class SearchService(MongotService):
         if is_index_id(index_id):
             return self.mongod.browse(index_id, **options)
         return super().browse(index_id, **options)
+
+    def search_meta(self, index_id: str, query: dict[str, Any], **options: Any) -> dict[str, Any]:
+        if is_index_id(index_id):
+            return self.mongod.search_meta(index_id, query, **options)
+        return super().search_meta(index_id, query, **options)
 
     def search_more(self, cursor_id: str | int, **options: Any) -> dict[str, Any]:
         if is_cursor_id(cursor_id):

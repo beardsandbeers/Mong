@@ -1,5 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { LightElement } from "../components/base";
+import { originBadge } from "../components/index-origin";
+import { originTitle } from "../lib/origin";
 import { icon } from "../components/icons";
 import { statusDot } from "../components/status-pill";
 import { toast } from "../components/toast";
@@ -202,9 +204,9 @@ export class MongApp extends LightElement {
             (index) => html`<a
               class="nav__index ${currentIndex === index.name ? "active" : ""}"
               href=${href(["indexes", index.name])}
-              title=${index.type}
+              title=${`${index.type}. ${originTitle(index)}`}
             >
-              ${statusDot(index)}<span class="ellipsis">${index.name}</span>
+              ${statusDot(index)}<span class="ellipsis">${index.name}</span>${originBadge(index)}
             </a>`,
           )}
         </nav>

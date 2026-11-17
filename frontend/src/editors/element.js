@@ -1,5 +1,6 @@
-import { StateEffect, StateField } from "./codemirror.js";
+import { StateEffect, StateField, startCompletion } from "./codemirror.js";
 import { queryCompletionSource } from "./complete.js";
+import { contextAt, joinIndexNames } from "./context.js";
 import { loadMappings } from "./fields.js";
 import { createJsonEditor, formatJson, renderStatus } from "./json-editor.js";
 import { lintQuery } from "./lint.js";
@@ -21,6 +22,10 @@ function emptyModel() {
   return { mode: "search", indexes: [], indexId: "", mappings: {} };
 }
 
+function mappingKey(index) {
+  return `${index.index_id}:${index.generation_id || index.active_revision || ""}:${index.desired_revision ?? ""}`;
+}
+
 export class MongQueryEditor extends HTMLElement {
   constructor() {
     super();
@@ -32,7 +37,7 @@ export class MongQueryEditor extends HTMLElement {
     this._pendingValue = null;
     this._silence = false;
     this._signature = "";
-    this._mappingFlight = "";
+    this._mappingKeys = new Map();
     this._status = null;
     this._resize = null;
     this._label = null;
@@ -83,6 +88,7 @@ export class MongQueryEditor extends HTMLElement {
         host.indent();
       },
       onDocChange: () => {
+        host._loadMappings();
         if (host._silence) return;
         host.dispatchEvent(new Event("input", { bubbles: true }));
         host._emitIndexChange();
@@ -276,19 +282,35 @@ export class MongQueryEditor extends HTMLElement {
   }
 
   async _loadMappings() {
-    const index = this._indexes.find((item) => item.index_id === this._indexId);
-    if (!index?.definition || index.type === "VECTOR_SEARCH") return;
-    const key = `${index.index_id}:${index.generation_id || index.active_revision || ""}:${index.desired_revision ?? ""}`;
-    if (this._mappingFlight === key) return;
-    this._mappingFlight = key;
-    const mappings = await loadMappings(index);
-    if (this._indexId !== index.index_id || !mappings) return;
-    this._model = {
-      ...this._model,
-      mappings: { ...this._model.mappings, [index.index_id]: mappings },
-    };
-    this._pushModel();
-    this._renderStatus();
+    const names = this._view ? joinIndexNames(this._view.state) : new Set();
+    const indexes = this._indexes.filter((index) => index.definition
+      && index.type !== "VECTOR_SEARCH"
+      && (index.index_id === this._indexId || names.has(index.name)));
+    await Promise.all(indexes.map(async (index) => {
+      const key = mappingKey(index);
+      if (this._mappingKeys.get(index.index_id) === key) return;
+      this._mappingKeys.set(index.index_id, key);
+      const mappings = await loadMappings(index);
+      if (this._mappingKeys.get(index.index_id) !== key) return;
+      const current = this._indexes.find((item) => item.index_id === index.index_id);
+      if (!mappings || !current || mappingKey(current) !== key) {
+        this._mappingKeys.delete(index.index_id);
+        return;
+      }
+      this._model = {
+        ...this._model,
+        mappings: { ...this._model.mappings, [index.index_id]: mappings },
+      };
+      this._pushModel();
+      this._renderStatus();
+      const view = this._view;
+      if (view?.hasFocus) {
+        const ctx = contextAt(view.state, view.state.selection.main.head);
+        if (ctx?.kind === "value" && ["path", "localField", "foreignField"].includes(ctx.key)) {
+          startCompletion(view);
+        }
+      }
+    }));
   }
 }
 

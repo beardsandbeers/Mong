@@ -1,13 +1,15 @@
 import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { LightElement } from "../components/base";
 import { confirmDialog } from "../components/dialog";
+import { originBadge } from "../components/index-origin";
 import { icon } from "../components/icons";
 import { indexStatus, statusPill } from "../components/status-pill";
 import type { TabSpec } from "../components/tabs";
 import { toast } from "../components/toast";
 import { track } from "../lib/activity";
 import { api, ApiError, errorMessage } from "../lib/api";
-import { capabilities, namespaceOf } from "../lib/capabilities";
+import { capabilities, namespaceOf, replicated } from "../lib/capabilities";
+import { originLabel, originTitle } from "../lib/origin";
 import { download } from "../lib/csv";
 import { canonicalJson, collapseContext, diffLines } from "../lib/diff";
 import { prettyJson } from "../lib/ejson";
@@ -17,7 +19,7 @@ import { indexValues, SeriesController, times, WINDOWS, windowSeconds } from "..
 import { appStore, indexByName, refreshSummary } from "../lib/state";
 import { load, save } from "../lib/storage";
 import { StoreController } from "../lib/store";
-import type { SummaryIndex } from "../lib/types";
+import type { SummaryIndex, UpdateMode } from "../lib/types";
 import { alertList } from "./dashboard";
 import "./index-danger";
 import "./index-fields";
@@ -29,7 +31,9 @@ type Tab = (typeof TABS)[number];
 const READ_ONLY_TABS: readonly Tab[] = ["overview", "definition", "data"];
 
 function tabsFor(index: SummaryIndex): readonly Tab[] {
-  return capabilities(index).readOnly ? READ_ONLY_TABS : TABS;
+  if (index.source === "mongod") return READ_ONLY_TABS;
+  if (replicated(index)) return ["overview", "definition", "fields", "storage", "data"];
+  return TABS;
 }
 
 type DefinitionEditor = HTMLElement & {
@@ -49,6 +53,7 @@ export class MongIndexDetail extends LightElement {
     baseText: { state: true },
     saving: { state: true },
     defError: { state: true },
+    updateMode: { state: true },
   };
   declare name: string;
   declare tab: string;
@@ -58,6 +63,7 @@ export class MongIndexDetail extends LightElement {
   declare baseText: string;
   declare saving: boolean;
   declare defError: string | null;
+  declare updateMode: UpdateMode;
 
   private readonly app = new StoreController(this, appStore);
   private readonly series = new SeriesController(this, () => this.index?.index_id);
@@ -73,6 +79,7 @@ export class MongIndexDetail extends LightElement {
     this.baseText = "";
     this.saving = false;
     this.defError = null;
+    this.updateMode = "rebuild";
   }
 
   private get index(): SummaryIndex | undefined {
@@ -108,16 +115,17 @@ export class MongIndexDetail extends LightElement {
       <div class="page__title">
         <div class="row">
           <h1>${index.name}</h1>
+          ${originBadge(index)}
           ${statusPill(index)}
           <span class="badge">${caps.isVector ? "vector" : "search"}</span>
-          ${caps.readOnly
-            ? html`<span class="badge" title="MongoDB manages this index; Mong browses and queries it">MongoDB</span>`
-            : nothing}
           ${recreated
             ? html`<span class="badge" title="This name now points at a new index id. Metrics history restarted.">recreated</span>`
             : nothing}
         </div>
-        <div class="hint mono">${caps.readOnly ? `mongot id ${index.mongot_id ?? "—"}` : index.index_id}</div>
+        <div class="hint" title=${originTitle(index)}>
+          ${originLabel(index)}${namespaceOf(index) ? html` · <span class="mono">${namespaceOf(index)}</span>` : nothing}
+          · <span class="mono">${index.index_id}</span>
+        </div>
       </div>
       <div class="page__actions">
         <a class="btn" href=${href("explore", { index: index.name })}>${icon("explore")} Query</a>
@@ -249,6 +257,24 @@ export class MongIndexDetail extends LightElement {
                   : nothing}
               </dd>
               <dt>Generation</dt><dd class="mono small">${index.generation_id ?? "—"}</dd>
+              ${index.ownership
+                ? html`<dt>Ownership</dt><dd>${index.ownership}</dd>`
+                : nothing}
+              ${namespaceOf(index)
+                ? html`<dt>Collection</dt><dd class="mono">${namespaceOf(index)}</dd>`
+                : nothing}
+              ${index.ownership === "replicated"
+                ? html`<dt>Queryable</dt><dd>${index.queryable ? "yes" : "no"}</dd>`
+                : nothing}
+              ${index.source_status
+                ? html`<dt>Source</dt><dd>${index.source_status}</dd>`
+                : nothing}
+              ${index.read_capabilities?.length
+                ? html`<dt>Reads</dt><dd>${index.read_capabilities.join(", ")}</dd>`
+                : nothing}
+              ${index.build?.state
+                ? html`<dt>Build</dt><dd>${index.build.state}</dd>`
+                : nothing}
               <dt>Index id</dt><dd class="mono small">${index.index_id}</dd>
               ${index.failure_message
                 ? html`<dt>Failure</dt><dd style="color:var(--danger)">${index.failure_message}</dd>`
@@ -366,21 +392,24 @@ export class MongIndexDetail extends LightElement {
       return;
     }
     const docs = index.metrics?.documents;
+    const preserve = this.updateMode === "preserve";
     const ok = await confirmDialog({
       title: `Save a new definition for ${index.name}?`,
       wide: true,
-      danger: true,
+      danger: !preserve,
       confirmText: `Save revision ${this.baseRevision + 1}`,
       typeToConfirm: index.name,
-      message: html`<div class="alert" data-tone="danger">
+      message: html`<div class="alert" data-tone=${preserve ? "info" : "danger"}>
           ${icon("alert", 18)}
           <div class="alert__body">
-            <div class="alert__title">The index will be rebuilt empty</div>
+            <div class="alert__title">${preserve ? "Keep the documents when the server can" : "The index will be rebuilt empty"}</div>
             <div class="small">
-              mongot builds revision ${this.baseRevision + 1} from scratch. The
-              ${docs != null ? html`<strong>${formatNumber(docs)}</strong>` : ""} documents in the current revision are
-              discarded once it takes over, and nothing re-ingests them for you. Reload your data afterwards, for example
-              with the CRM loader.
+              ${preserve
+                ? html`mongot accepts revision ${this.baseRevision + 1} only when the new definition can keep the current documents. Otherwise the save is rejected and nothing is rebuilt.`
+                : html`mongot builds revision ${this.baseRevision + 1} from scratch. The
+                  ${docs != null ? html`<strong>${formatNumber(docs)}</strong>` : ""} documents in the current revision are
+                  discarded once it takes over, and nothing re-ingests them for you. Reload your data afterwards, for example
+                  with the CRM loader.`}
             </div>
           </div>
         </div>
@@ -400,10 +429,14 @@ export class MongIndexDetail extends LightElement {
       const updated = await track(
         "Update definition",
         index.name,
-        () => api.updateIndex(index.index_id, definition, this.baseRevision!),
+        () => api.updateIndex(index.index_id, definition, this.baseRevision!, this.updateMode),
         (result) => `revision ${result.desired_revision}`,
       );
-      toast(`Saved revision ${updated.desired_revision}. mongot is rebuilding ${index.name}.`);
+      toast(
+        this.updateMode === "preserve"
+          ? `Saved revision ${updated.desired_revision}. mongot kept the documents in ${index.name}.`
+          : `Saved revision ${updated.desired_revision}. mongot is rebuilding ${index.name}.`,
+      );
       this.baseText = prettyJson(updated.definition ?? definition);
       this.baseRevision = updated.desired_revision;
       this.draft = this.baseText;
@@ -506,9 +539,21 @@ export class MongIndexDetail extends LightElement {
         ${caps.readOnly
           ? nothing
           : html`<div class="drawer__foot">
+              <label class="row small">
+                Save
+                <select
+                  aria-label="How to apply the definition"
+                  .value=${this.updateMode}
+                  @change=${(e: Event) => (this.updateMode = (e.target as HTMLSelectElement).value as UpdateMode)}
+                >
+                  <option value="rebuild" ?selected=${this.updateMode === "rebuild"}>Rebuild empty</option>
+                  <option value="preserve" ?selected=${this.updateMode === "preserve"}>Keep documents</option>
+                  <option value="auto" ?selected=${this.updateMode === "auto"}>Let the server decide</option>
+                </select>
+              </label>
               <button class="btn secondary" ?disabled=${!this.dirty} @click=${() => (this.draft = this.baseText)}>Discard edits</button>
-              <button class="btn danger" ?disabled=${!this.dirty || this.saving || serverMoved} @click=${() => this.saveDefinition(index)}>
-                ${this.saving ? "Saving…" : "Save and rebuild…"}
+              <button class="btn ${this.updateMode === "rebuild" ? "danger" : ""}" ?disabled=${!this.dirty || this.saving || serverMoved} @click=${() => this.saveDefinition(index)}>
+                ${this.saving ? "Saving…" : this.updateMode === "preserve" ? "Save and keep documents…" : "Save…"}
               </button>
             </div>`}
       </section>
@@ -552,7 +597,7 @@ export class MongIndexDetail extends LightElement {
       case "danger":
         return html`<mong-index-danger .index=${index}></mong-index-danger>`;
       default:
-        return capabilities(index).readOnly ? this.managedOverview(index) : this.overview(index);
+        return index.source === "mongod" ? this.managedOverview(index) : this.overview(index);
     }
   }
 

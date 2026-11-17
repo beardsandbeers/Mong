@@ -4,7 +4,7 @@ Admin UI and Python client for a locally running [NoMongo-T](https://github.com/
 
 ## Prerequisites
 
-- Docker with `nomongo-t` running `mybyte/nomongo-t:0.8.0` and healthy on port `27029`
+- Docker with `nomongo-t` running `mybyte/nomongo-t:0.10.0` and healthy on port `27029`
 - Python 3.11+
 
 ## Setup
@@ -27,14 +27,14 @@ docker cp nomongo-t:/var/lib/mongot/config/admin.token .nomongo-t/admin.token
 
 ### Upgrading the container
 
-0.3.x through 0.8.x share the push API and data directory, so an upgrade keeps indexes, documents, and credentials as long as the new container mounts the same `/var/lib/mongot` volume. A fresh volume regenerates `server.crt` and `admin.token` — re-copy them into `.nomongo-t/` after that. 0.7 and later store `lucene.standard` for an omitted analyzer; that is the same definition, not a change. 0.8 adds query explain and delete-by-query; both need this client.
+0.3.x through 0.10.x share the push API and data directory, so an upgrade keeps indexes, documents, and credentials as long as the new container mounts the same `/var/lib/mongot` volume. A fresh volume regenerates `server.crt` and `admin.token` — re-copy them into `.nomongo-t/` after that. 0.7 and later store `lucene.standard` for an omitted analyzer; that is the same definition, not a change. 0.8 adds query explain and delete-by-query. 0.10 adds metadata-only search, direct reads of replicated indexes, and definition updates that can keep documents. Those need this client.
 
 ```powershell
 $volume = (docker inspect nomongo-t --format '{{json .Mounts}}' | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.Destination -eq '/var/lib/mongot' }).Name
-docker pull mybyte/nomongo-t:0.8.0
+docker pull mybyte/nomongo-t:0.10.0
 docker stop nomongo-t
 docker rename nomongo-t nomongo-t-old
-docker run -d --name nomongo-t -p 27029:27029 -v "${volume}:/var/lib/mongot" mybyte/nomongo-t:0.8.0
+docker run -d --name nomongo-t -p 27029:27029 -v "${volume}:/var/lib/mongot" mybyte/nomongo-t:0.10.0
 ```
 
 Keep the server image and `mongot-standalone-client` on the same version. Collection-backed 0.2.x data directories are not compatible.
@@ -79,7 +79,7 @@ Ctrl+K opens a command palette for jumping to indexes and actions. The Activity 
 
 Documents travel as relaxed Extended JSON: `ObjectId`, dates, `Decimal128`, integers beyond 2^53, and whole-number doubles are tagged (`{"$oid"}`, `{"$date"}`, `{"$numberDouble"}`, ...) so an edited document keeps its types when it is written back.
 
-Documents live in the index. Updating an index definition rebuilds an empty generation, so the previous documents have to be loaded again. There is no collection catalog. Delete-by-query (0.8) selects ids and deletes them in batches; it is not a single atomic query.
+Documents live in the index. Updating an index definition can rebuild an empty generation, or keep the documents when you choose Keep documents and the server accepts the change. There is no collection catalog. Delete-by-query (0.8) selects ids and deletes them in batches; it is not a single atomic query. Search meta (0.10) runs the same query for facet and count metadata without returning hits.
 
 ### MongoDB-managed indexes
 
@@ -247,7 +247,7 @@ Optional overrides:
 - `MONG_ALLOWED_HOSTS`: comma-separated extra hostnames to accept besides loopback
 - `MONGODB_URI`: lists and queries [MongoDB-managed indexes](#mongodb-managed-indexes) (off when unset)
 
-The Python client dependency is `mongot-standalone-client` 0.8.0, matching the push-only mongot API (no collections), cross-index `join` filters, query explain, and delete-by-query. Bulk upserts default to write concern `indexed`. Delete-by-query defaults to `visible` and, in this admin API, to a dry run.
+The Python client dependency is `mongot-standalone-client` 0.10.0, matching the push-only mongot API, cross-index `join` filters (including integer keys), query explain, delete-by-query, metadata-only search, and direct reads of replicated indexes. Bulk upserts default to write concern `indexed`. Delete-by-query defaults to `visible` and, in this admin API, to a dry run. Definition saves default to rebuilding an empty generation; `update_mode: preserve` keeps documents when the server can.
 
 ## Frontend layout
 

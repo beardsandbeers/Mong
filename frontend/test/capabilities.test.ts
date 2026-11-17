@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { capabilities, namespaceOf } from "../src/lib/capabilities";
+import { indexLabel, isCoupled, originLabel } from "../src/lib/origin";
 import type { IndexInfo } from "../src/lib/types";
 
 function index(overrides: Partial<IndexInfo>): IndexInfo {
@@ -48,6 +49,33 @@ describe("capabilities", () => {
     expect(caps.editable).toBe(false);
     expect(caps.reasons.editable).toContain("crm.accounts");
     expect(caps.exportMappings).toBe(false);
+  });
+
+  it("labels a push index standalone and a collection index coupled", () => {
+    expect(originLabel(index({ source: "mongot" }))).toBe("Standalone");
+    expect(isCoupled(index({ source: "mongot" }))).toBe(false);
+    expect(originLabel(managed())).toBe("Coupled");
+    expect(indexLabel(managed())).toBe("crm.accounts/accounts_search");
+    expect(indexLabel(index({
+      name: "accounts_search",
+      ownership: "replicated",
+      namespace: { database: "crm", collection: "accounts" },
+    }))).toBe("crm.accounts/accounts_search");
+    expect(isCoupled(index({ ownership: "replicated", namespace: { database: "crm", collection: "accounts" } }))).toBe(true);
+  });
+
+  it("treats a replicated nomongo-t index as read-only and names its collection", () => {
+    const caps = capabilities(index({
+      ownership: "replicated",
+      namespace: { database: "crm", collection: "accounts" },
+      definition: { mappings: { dynamic: true }, storedSource: true },
+    }));
+    expect(namespaceOf(index({ namespace: { database: "crm", collection: "accounts" } }))).toBe("crm.accounts");
+    expect(caps.readOnly).toBe(true);
+    expect(caps.browse).toBe(true);
+    expect(caps.exportMappings).toBe(true);
+    expect(caps.editable).toBe(false);
+    expect(caps.reasons.editable).toContain("replicates");
   });
 
   it("browses MongoDB-managed vector indexes too", () => {

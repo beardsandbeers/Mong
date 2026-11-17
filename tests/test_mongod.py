@@ -370,6 +370,23 @@ def test_search_service_reads_mongod_ids_and_refuses_writes(monkeypatch) -> None
         assert "crm.accounts/accounts_search is managed by MongoDB" in str(exc.value)
 
 
+def test_merge_summary_keeps_one_row_when_mongot_already_lists_the_index() -> None:
+    replicated = {
+        "index_id": "6afae139",
+        "name": "accounts_search",
+        "ownership": "replicated",
+        "namespace": {"database": "crm", "collection": "accounts"},
+        "lifecycle_state": "READY",
+        "metrics": {"documents": None},
+    }
+    summary = {"connected": True, "indexes": [replicated], "alerts": []}
+    state = {"enabled": True, "connected": True, "error": None, "indexes": [_mongod(_client()).snapshot()["indexes"][0]]}
+
+    merged = merge_summary(summary, state)
+    assert [index["name"] for index in merged["indexes"]] == ["accounts_search"]
+    assert merged["indexes"][0]["metrics"]["documents"] == 3
+
+
 def test_merge_summary_adds_indexes_and_sorts_alerts() -> None:
     standalone = {"index_id": "s1", "name": "people", "metrics": {"documents": 5}}
     summary = {"connected": True, "indexes": [standalone], "alerts": [{"id": "x", "severity": "info"}]}

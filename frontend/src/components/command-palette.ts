@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
 import { capabilities } from "../lib/capabilities";
+import { originLabel } from "../lib/origin";
 import { navigate } from "../lib/router";
 import { appStore, refreshSummary } from "../lib/state";
 import { LightElement } from "./base";
@@ -66,28 +67,30 @@ function commands(): Command[] {
   ];
   for (const index of appStore.value.indexes) {
     const readOnly = capabilities(index).readOnly;
+    const origin = originLabel(index);
     base.push(
       {
         id: `idx:${index.name}`,
         label: `Open ${index.name}`,
-        group: index.type === "VECTOR_SEARCH" ? "Vector index" : "Search index",
+        group: origin,
         glyph: "layers",
-        keywords: index.name,
+        keywords: `${origin} ${index.name}`,
         run: () => navigate(["indexes", index.name]),
       },
       {
         id: `explore:${index.name}`,
         label: `Query ${index.name}`,
-        group: "Explore",
+        group: origin,
         glyph: "explore",
-        keywords: `search browse ${index.name}`,
+        keywords: `search browse ${origin} ${index.name}`,
         run: () => navigate("explore", { index: index.name }),
       },
       {
         id: `def:${index.name}`,
         label: `${readOnly ? "Definition" : "Edit definition"} of ${index.name}`,
-        group: "Index",
+        group: origin,
         glyph: "code",
+        keywords: origin,
         run: () => navigate(["indexes", index.name, "definition"]),
       },
     );
