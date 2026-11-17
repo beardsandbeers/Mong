@@ -6,8 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "build:vendor": "esbuild codemirror-entry.js --bundle --format=esm --platform=neutral --outfile=../src/mong/web/static/vendor/codemirror.js --minify"
+    "test": "vitest run"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.6",
@@ -22,7 +21,6 @@
     "uplot": "^1.6.32"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2",
     "happy-dom": "^21.0.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",

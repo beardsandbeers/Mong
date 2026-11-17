@@ -15,7 +15,6 @@ mimetypes.add_type("text/javascript", ".js")
 
 from mong.web.api import api_bp
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
 DIST_DIR = Path(__file__).resolve().parent / "dist"
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -29,7 +28,6 @@ BUILD_MISSING_PAGE = """<!DOCTYPE html>
 <pre>cd frontend
 npm install
 npm run build</pre>
-<p>The previous UI is still available at <a href="/legacy/">/legacy/</a>.</p>
 </body></html>
 """
 
@@ -66,11 +64,7 @@ def guard_request():
 
 
 def create_app() -> Flask:
-    app = Flask(
-        __name__,
-        static_folder=str(STATIC_DIR),
-        static_url_path="/static",
-    )
+    app = Flask(__name__, static_folder=None)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.before_request(guard_request)
     app.register_blueprint(api_bp)
@@ -88,10 +82,6 @@ def create_app() -> Flask:
     @app.get("/favicon.svg")
     def favicon():
         return send_from_directory(DIST_DIR, "favicon.svg")
-
-    @app.get("/legacy/")
-    def legacy():
-        return send_from_directory(STATIC_DIR, "index.html")
 
     return app
 

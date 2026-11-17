@@ -210,9 +210,6 @@ export class MongApp extends LightElement {
             </a>`,
           )}
         </nav>
-        <div class="sidebar__foot">
-          <a href="/legacy/" class="muted">Previous UI</a>
-        </div>
       </aside>
       <div class="main">
         <header class="topbar">

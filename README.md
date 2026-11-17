@@ -51,7 +51,7 @@ cd ..
 python -m mong
 ```
 
-Open [http://127.0.0.1:5050](http://127.0.0.1:5050). Without a build, `/` shows these instructions. The previous UI stays available at [/legacy/](http://127.0.0.1:5050/legacy/) until the new one replaces it.
+Open [http://127.0.0.1:5050](http://127.0.0.1:5050). Without a build, `/` shows these instructions.
 
 Options: `--host` (or `MONG_HOST`, default 127.0.0.1), `--port` (or `MONG_PORT`, default 5050), and `--debug` (or `MONG_DEBUG=1`; turns on the Flask debugger and reloader, off by default).
 
@@ -110,7 +110,7 @@ Open [http://127.0.0.1:5050](http://127.0.0.1:5050), or `http://<host>:5050` fro
 
 The API has no authentication. Anyone who can reach the port can read every collection `MONGO_URI` can read, and can create, change, and drop standalone indexes. Docker-published ports bypass host firewalls such as ufw, so limit access on the network or bind `MONG_BIND_IP` to a specific interface.
 
-The image builds the UI in a Node stage. `MONG_BUILD_TARGET=server` skips it: `/` then shows the build instructions, and the API and `/legacy/` work as usual.
+The image builds the UI in a Node stage. `MONG_BUILD_TARGET=server` skips it: `/` then shows the build instructions, and the API works as usual.
 
 ```sh
 MONG_BUILD_TARGET=server docker compose up -d --build --wait
@@ -252,8 +252,6 @@ The Python client dependency is `mongot-standalone-client` 0.10.0, matching the 
 ## Frontend layout
 
 `frontend/src/` holds the app: `views/` (pages), `components/` (shared Lit elements, which render into light DOM so CodeMirror styles apply), `editors/` (the CodeMirror query, definition, and JSON editors, imported from npm), `lib/` (API client, Extended JSON, formatting, state), and `styles/`. `npm run build` type-checks and writes `src/mong/web/dist/`.
-
-The legacy UI at `/legacy/` still uses the vendored CodeMirror bundle at `src/mong/web/static/vendor/codemirror.js`; `npm run build:vendor` rebuilds it.
 
 ## Test
 

@@ -32,7 +32,7 @@ mong-admin = "mong.web.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mong = ["web/static/**/*", "web/dist/**/*"]
+mong = ["web/dist/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

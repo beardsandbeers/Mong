@@ -202,13 +202,6 @@ mong-app {
   min-width: 0;
 }
 
-.sidebar__foot {
-  margin-top: auto;
-  padding: 0 var(--space-2);
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 .main {
   min-width: 0;
   display: flex;

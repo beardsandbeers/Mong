@@ -7,7 +7,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Flask API, legacy UI at /legacy/, and the CRM scripts. `/` explains that the UI is not built.
+# Flask API and CRM scripts. `/` explains that the UI is not built.
 FROM python:3.12-slim AS server
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

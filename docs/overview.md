@@ -11,7 +11,7 @@ Mong is a local admin console for [NoMongo-T](https://github.com/beardsandbeers/
 - `src/mong/serialize.py` — protobuf and BSON to JSON. Documents travel as relaxed Extended JSON
 - `src/mong/metrics.py` — background `GetStatus` sampler: rates, interval latency, gauges, annotations, and alerts
 - `src/mong/jobs.py` — in-process job runner for clearing an index, large deletes by query, and exports
-- `src/mong/web/` — Flask app (request guard, serves the built UI from `dist/` and the legacy UI from `static/` at `/legacy/`) and REST API
+- `src/mong/web/` — Flask app (request guard, serves the built UI from `dist/`) and REST API
 - `frontend/` — Vite + TypeScript + Lit source for the UI (`src/views`, `src/components`, `src/editors`, `src/lib`). `npm run build` writes the gitignored `src/mong/web/dist/`
 - `scripts/ingest/` — writers for mock data. `mongot.py` upserts a standalone search index; `mongod.py` bulk-upserts a MongoDB collection and creates a search index on it. The batching pipeline only sees `upsert_many`
 - `Dockerfile`, `compose.yaml` — image with the built UI (target `app`) or without it (target `server`), run on the `mongo-search` stack's network

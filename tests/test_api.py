@@ -9,21 +9,18 @@ def test_health_endpoint() -> None:
     assert response.get_json()["ok"] is True
 
 
-def test_javascript_modules_use_a_javascript_mime_type() -> None:
+def test_legacy_ui_is_not_served() -> None:
     app = create_app()
     client = app.test_client()
-    response = client.get("/static/js/query-editor/index.js")
-    assert response.status_code == 200
-    assert response.mimetype == "text/javascript"
-
-
-def test_legacy_page_served() -> None:
-    app = create_app()
-    client = app.test_client()
-    response = client.get("/legacy/")
-    assert response.status_code == 200
-    assert b"Mong Admin" in response.data
-    assert b"mong-query-editor" in response.data
+    for path in (
+        "/legacy/",
+        "/static/index.html",
+        "/static/css/admin.css",
+        "/static/js/admin.js",
+        "/static/js/query-editor/index.js",
+        "/static/vendor/codemirror.js",
+    ):
+        assert client.get(path).status_code == 404
 
 
 def test_root_serves_build_or_explains_how_to_build(monkeypatch, tmp_path) -> None:
@@ -34,6 +31,7 @@ def test_root_serves_build_or_explains_how_to_build(monkeypatch, tmp_path) -> No
     missing = client.get("/")
     assert missing.status_code == 503
     assert b"npm run build" in missing.data
+    assert b"/legacy/" not in missing.data
 
     (tmp_path / "assets").mkdir()
     (tmp_path / "index.html").write_text("<mong-app></mong-app>", encoding="utf-8")
