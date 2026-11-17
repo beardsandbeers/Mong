@@ -4,6 +4,8 @@ Admin UI and Python client for a locally running [NoMongo-T](https://github.com/
 
 ## Prerequisites
 
+For the [standalone Docker stack](#standalone-search--mong-two-containers), only Docker with a recent Compose plugin (supporting volume subpaths) is needed. For a local Python installation:
+
 - Docker with `nomongo-t` running `mybyte/nomongo-t:0.10.0` and healthy on port `27029`
 - Python 3.11+
 
@@ -93,6 +95,44 @@ nomongo-t also serves search indexes that MongoDB manages: the ones created with
 If mongod is unreachable, the dashboard shows a **MongoDB is unreachable** alert and the last listed indexes stay visible.
 
 ## Run in Docker
+
+### Standalone search + Mong (two containers)
+
+`compose.standalone.yaml` starts NoMongo-T 0.10.0 and builds Mong with the API and UI. It needs no MongoDB container, external network, existing secrets, or local Python/Node installation:
+
+```sh
+docker compose -f compose.standalone.yaml up -d --build --wait --wait-timeout 180
+```
+
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051). The project is named `mong-standalone`, its UI image is `mong-standalone-ui:local`, and it creates its own network and `search-data` volume. It can run alongside the existing `mong` and `mongo-search` projects without changing their containers, images, ports, credentials, or data. Use this file by itself, rather than combining it with `compose.yaml`.
+
+Search listens only inside the stack at `mongot:27029`; no search port is published. On first startup it generates a TLS certificate and admin token in its persistent volume. Mong waits for search to become healthy, then mounts just the certificate and token read-only as uid 10001 and connects over authenticated TLS. Its health check calls `/api/status`, so `--wait` verifies the search connection. Search has a 4 GiB container memory limit. The published search image is Linux amd64; ARM hosts need amd64 emulation.
+
+The standalone stack uses separate settings, so the existing `.env` MongoDB URI and `MONG_*` settings do not connect it to the running environment:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `STANDALONE_MONG_PORT` | `5051` | Host port for Mong |
+| `STANDALONE_MONG_BIND_IP` | `127.0.0.1` | Host interface to publish on |
+| `STANDALONE_MONG_ALLOWED_HOSTS` | empty | Extra hostnames/IPs accepted by Mong |
+
+For remote access, set both `STANDALONE_MONG_BIND_IP` and `STANDALONE_MONG_ALLOWED_HOSTS` for the intended interface and hostname. The API has no authentication; publish it only on a trusted interface.
+
+Manage only this stack with the same file:
+
+```sh
+docker compose -f compose.standalone.yaml ps
+docker compose -f compose.standalone.yaml logs --tail 100
+docker compose -f compose.standalone.yaml down
+```
+
+`down` preserves search indexes and credentials. Starting again reuses them. Adding `--volumes` to `down` deletes this stack's data and credentials. To load sample data into this search server:
+
+```sh
+docker compose -f compose.standalone.yaml exec mong python -m scripts.crm --accounts 1000 --seed 42 --load
+```
+
+### Use the existing MongoDB/search stack
 
 `compose.yaml` runs the admin UI next to the `mongo-search` stack from `~/mongo-deployment` (MongoDB plus NoMongo-T), which must be running first. The container joins that stack's `mongo-search_default` network:
 

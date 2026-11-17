@@ -15,6 +15,7 @@ Mong is a local admin console for [NoMongo-T](https://github.com/beardsandbeers/
 - `frontend/` — Vite + TypeScript + Lit source for the UI (`src/views`, `src/components`, `src/editors`, `src/lib`). `npm run build` writes the gitignored `src/mong/web/dist/`
 - `scripts/ingest/` — writers for mock data. `mongot.py` upserts a standalone search index; `mongod.py` bulk-upserts a MongoDB collection and creates a search index on it. The batching pipeline only sees `upsert_many`
 - `Dockerfile`, `compose.yaml` — image with the built UI (target `app`) or without it (target `server`), run on the `mongo-search` stack's network
+- `compose.standalone.yaml` — independent two-container NoMongo-T + Mong stack on port 5051, with its own network, persistent search data/credentials, and readiness checks
 - `scripts/crm/` — deterministic fake CRM generator (`generate.py`), shared document shape (`schema.py`), `--target` wiring (`targets.py`), streaming loader (`load.py`), join verifier (`verify.py`), CLI (`cli.py`). Both targets create one search index per entity. `--target mongot` (the default) upserts documents into that index; `--target mongod` upserts them into the collection
 
 ## Browse vs search
@@ -71,6 +72,6 @@ Results are relaxed Extended JSON (`{"$oid"}`, `{"$date"}`, `{"$numberDecimal"}`
 
 ## Credentials
 
-Copy `server.crt` and `admin.token` from the `nomongo-t` container into `.nomongo-t/`. Never commit that directory. In Docker, `compose.yaml` mounts both read-only from the stack's secrets volume instead.
+Copy `server.crt` and `admin.token` from the `nomongo-t` container into `.nomongo-t/`. Never commit that directory. In Docker, `compose.yaml` mounts both read-only from the existing stack's secrets volume. `compose.standalone.yaml` mounts only those two files from its own search volume after search finishes bootstrapping them.
 
 See the root [README](../README.md) for setup, API routes, and CRM generator flags.

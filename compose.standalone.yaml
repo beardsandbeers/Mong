@@ -1,0 +1,70 @@
+name: mong-standalone
+
+# Independent of compose.yaml and the running mongo-search stack.
+services:
+  mongot:
+    image: mybyte/nomongo-t:mongot-standalone-v0.10.0
+    platform: linux/amd64
+    init: true
+    restart: unless-stopped
+    mem_limit: 4g
+    stop_grace_period: 90s
+    volumes:
+      - search-data:/var/lib/mongot
+    healthcheck:
+      test: ["CMD", "mongotctl", "health"]
+      interval: 5s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+
+  mong:
+    build:
+      context: .
+      target: app
+    image: mong-standalone-ui:local
+    init: true
+    restart: unless-stopped
+    depends_on:
+      mongot:
+        condition: service_healthy
+    ports:
+      - "${STANDALONE_MONG_BIND_IP:-127.0.0.1}:${STANDALONE_MONG_PORT:-5051}:5050"
+    environment:
+      NOMONGOT_ADDRESS: mongot:27029
+      NOMONGOT_CREDENTIALS_DIR: /run/mong/nomongo-t
+      MONGODB_URI: ""
+      MONG_ALLOWED_HOSTS: ${STANDALONE_MONG_ALLOWED_HOSTS:-}
+    # Search bootstraps these files before becoming healthy. Mount only the
+    # client credentials, never its private key or index data. Both images use uid 10001.
+    volumes:
+      - type: volume
+        source: search-data
+        target: /run/mong/nomongo-t/server.crt
+        read_only: true
+        volume:
+          subpath: config/server.crt
+      - type: volume
+        source: search-data
+        target: /run/mong/nomongo-t/admin.token
+        read_only: true
+        volume:
+          subpath: config/admin.token
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          status = json.load(urllib.request.urlopen('http://127.0.0.1:5050/api/status', timeout=5));
+          assert status['management_ready']
+      interval: 10s
+      timeout: 10s
+      start_period: 15s
+      retries: 6
+
+# Compose prefixes this volume and the default network with mong-standalone.
+# No existing network, volume, credentials, or host search port is reused.
+volumes:
+  search-data:

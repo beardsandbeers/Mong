@@ -20,7 +20,7 @@ RUN mkdir -p src/mong && touch src/mong/__init__.py \
     && pip install -e ".[mongod]"
 COPY src ./src
 COPY scripts ./scripts
-# uid 10001 owns the nomongo-t secret files that compose.yaml mounts read-only.
+# uid 10001 owns the nomongo-t credentials mounted read-only by Compose.
 RUN groupadd --gid 10001 mong \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin mong
 USER mong
