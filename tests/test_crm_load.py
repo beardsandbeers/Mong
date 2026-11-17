@@ -12,10 +12,14 @@ from scripts.crm.generate import (
     account_id,
     contact_id,
     generate_crm_dataset,
+    tenant_id,
 )
 from scripts.crm.load import (
+    _accounts_completed,
     _list_upserter_factory,
     ensure_search_index,
+    progress_bar,
+    progress_totals,
     search_definition,
     stream_crm_documents,
 )
@@ -145,10 +149,49 @@ def test_single_entity_matches_full_generation() -> None:
 
 
 def test_start_account_continues_same_dataset() -> None:
-    whole = [d for _, _, d in CrmGenerator(_spec(accounts=6)).iter_documents()]
-    head = [d for _, _, d in CrmGenerator(_spec(accounts=3)).iter_documents()]
-    tail = [d for _, _, d in CrmGenerator(_spec(accounts=3, start_account=3)).iter_documents()]
+    whole = [d for _, _, d in CrmGenerator(_spec(tenants=2, accounts=3)).iter_documents()]
+    head = [d for _, _, d in CrmGenerator(_spec(tenants=1, accounts=3)).iter_documents()]
+    tail = [d for _, _, d in CrmGenerator(_spec(tenants=2, accounts=3, start_account=3)).iter_documents()]
     assert head + tail == whole
+
+
+def test_large_runs_skip_the_exact_document_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.crm.load._EXACT_COUNT_LIMIT", 2)
+    assert progress_totals(_spec(accounts=5), ("accounts",)) is None
+    assert progress_totals(_spec(accounts=2), ("accounts",))["accounts"] == 2
+
+
+def test_large_runs_measure_accounts_so_the_bar_has_an_eta(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.crm.load._EXACT_COUNT_LIMIT", 2)
+    huge = _spec(accounts=5)
+    assert progress_bar(huge, None) == (5, "account")
+    small = progress_totals(_spec(accounts=2), ("accounts", "contacts"))
+    assert small is not None
+    assert progress_bar(_spec(accounts=2), small) == (sum(small.values()), "doc")
+
+
+def test_accounts_completed_sums_finished_shards() -> None:
+    shards = [(0, 10), (10, 10)]
+    assert _accounts_completed(shards, [4, 10]) == 4
+    assert _accounts_completed(shards, [10, 20]) == 20
+    assert _accounts_completed(shards, [0, 15]) == 5
+
+
+def test_tenant_id_groups_accounts() -> None:
+    spec = _spec(tenants=3, accounts=4, contacts_per_account=(1, 1), opportunities_per_account=(1, 1))
+    grouped: dict[str, list[dict[str, Any]]] = {"accounts": [], "contacts": [], "opportunities": []}
+    for _, entity, doc in CrmGenerator(spec).iter_documents():
+        grouped[entity].append(doc)
+
+    assert len(grouped["accounts"]) == 12
+    tenants = [doc["tenant_id"] for doc in grouped["accounts"]]
+    assert tenants == [tenant_id(42, index // 4) for index in range(12)]
+    assert len(set(tenants)) == 3
+    by_account = {doc["_id"]: doc["tenant_id"] for doc in grouped["accounts"]}
+    for entity in ("contacts", "opportunities"):
+        assert grouped[entity]
+        for doc in grouped[entity]:
+            assert doc["tenant_id"] == by_account[doc["account_id"]]
 
 
 def test_ids_are_derivable_without_generation() -> None:
@@ -172,6 +215,7 @@ def test_stream_batches_and_counts() -> None:
     assert report["interrupted"] is False
     for entity, info in report["entities"].items():
         assert info["written"] == info["expected"] == expected[entity]
+        assert info["index_id"] == INDEX_IDS[entity]
     assert all(len(docs) <= 3 for _, docs, _ in upserter.calls)
     assert {concern for _, _, concern in upserter.calls} == {"committed"}
 
@@ -251,3 +295,17 @@ def test_stream_workers_cover_every_document() -> None:
 def test_invalid_ranges_rejected() -> None:
     with pytest.raises(ValueError):
         CrmSpec(seed=1, accounts=1, contacts_per_account=(3, 1))
+
+
+def test_report_can_name_the_writer_address() -> None:
+    spec = _spec(accounts=1, contacts_per_account=(0, 0), opportunities_per_account=(0, 0))
+    report = stream_crm_documents(
+        spec,
+        upserter=FakeUpserter(),
+        index_ids={"accounts": "accounts"},
+        entities=("accounts",),
+        progress=False,
+        address_field="collection",
+    )
+    assert report["entities"]["accounts"]["collection"] == "accounts"
+    assert "index_id" not in report["entities"]["accounts"]

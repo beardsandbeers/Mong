@@ -127,3 +127,42 @@ test("loadMappings caches the exported mapping", async () => {
   assert.equal(calls.length, 1);
   assert.match(calls[0], /\/api\/indexes\/idx-1\/mappings\?generation_id=gen-1/);
 });
+
+test("MongoDB loads sampled suggestions and keeps unsampled dynamic paths open", async () => {
+  clearMappingCache();
+  const index = {
+    index_id: "mongod:crm:contacts:contacts_search", source: "mongod", desired_revision: 0,
+    definition: { mappings: { dynamic: true, fields: { account_id: { type: "token" } } } },
+  };
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return { ok: true, json: async () => ({ source: "sampled", sample_size: 100, mappings: {
+      dynamic: true, fields: {
+        full_name: [{ type: "string" }],
+        address: [{ type: "document", dynamic: true, fields: { city: [{ type: "string" }] } }],
+      },
+    } }) };
+  };
+  const mapping = await loadMappings(index, fetchImpl);
+  const fields = FieldIndex.compile(index.definition).applyObserved(mapping);
+  assert.equal(calls[0], "/api/indexes/mongod%3Acrm%3Acontacts%3Acontacts_search/field-suggestions");
+  assert.equal(fields.lookup("full_name").origin, "sampled");
+  assert.equal(fields.lookup("address.city").origin, "sampled");
+  assert.equal(fields.lookup("address.zip").allowed, true);
+  assert.equal(fields.lookup("rare_field").allowed, true);
+  assert.deepEqual([...fields.lookup("account_id").types], ["token"]);
+  assert.deepEqual(fields.suggest(["string"]).map((field) => field.path), ["address.city", "full_name"]);
+  await loadMappings(index, fetchImpl);
+  assert.equal(calls.length, 1);
+  await loadMappings({ ...index, desired_revision: 1 }, fetchImpl);
+  assert.equal(calls.length, 2);
+});
+
+test("failed suggestion requests can be retried", async () => {
+  clearMappingCache();
+  const index = { index_id: "mongod:crm:contacts:contacts_search", source: "mongod" };
+  assert.equal(await loadMappings(index, async () => ({ ok: false })), null);
+  const result = await loadMappings(index, async () => ({ ok: true, json: async () => ({ mappings: { dynamic: true } }) }));
+  assert.equal(result.dynamic, true);
+});

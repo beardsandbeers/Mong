@@ -60,6 +60,11 @@ def explain_verbosity(value: str | None) -> int:
         ) from None
 
 
+def explain_name(value: str | None) -> str | None:
+    """Canonical explain name (``query_planner``, ...), or None when explain is off."""
+    return _EXPLAIN_NAMES.get(explain_verbosity(value))
+
+
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 2)
 
@@ -487,6 +492,7 @@ class MongotService:
         page: int = 1,
         drain: bool = False,
         generation_id: str = "",
+        count: bool = False,
     ) -> dict[str, Any]:
         """Browse documents via a broad search expression on a search index.
 
@@ -495,6 +501,8 @@ class MongotService:
         """
         expression = dict(query) if query else {"exists": {"path": "_id"}}
         expression["returnStoredSource"] = True
+        if count:
+            expression.setdefault("count", {"type": "lowerBound"})
         return self.search(
             index_id,
             expression,

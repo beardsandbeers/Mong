@@ -225,7 +225,7 @@ class Pool:
 
 
 def sample_pool(spec: CrmSpec, size: int, rng: random.Random) -> Pool:
-    accounts = tuple(sorted(rng.sample(spec.account_range, min(size, spec.accounts))))
+    accounts = tuple(sorted(rng.sample(spec.account_range, min(size, spec.run_accounts))))
     generator = CrmGenerator(spec)
     documents: dict[str, list[dict[str, Any]]] = {entity: [] for entity in ENTITY_KEYS}
     by_account: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -559,7 +559,7 @@ def verify_crm(
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Check the pool is loaded, then run ``queries`` join checks. ``failed`` counts every failing check."""
-    if spec.accounts < 1:
+    if spec.run_accounts < 1:
         raise ValueError("verification needs at least one account")
     if pool_accounts < 1 or queries < 1:
         raise ValueError("pool_accounts and queries must be >= 1")

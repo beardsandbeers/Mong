@@ -58,6 +58,21 @@ def test_guard_allows_extra_hosts_from_env(monkeypatch) -> None:
     assert client.get("/api/health", headers={"Host": "mong.internal:5050"}).status_code == 200
 
 
+def test_main_listens_on_loopback_unless_overridden(monkeypatch) -> None:
+    from flask import Flask
+
+    from mong.web import app as web_app
+
+    calls = []
+    monkeypatch.setattr(Flask, "run", lambda self, **kwargs: calls.append(kwargs))
+    monkeypatch.delenv("MONG_HOST", raising=False)
+    web_app.main([])
+    monkeypatch.setenv("MONG_HOST", "0.0.0.0")
+    web_app.main([])
+    web_app.main(["--host", "::1"])
+    assert [call["host"] for call in calls] == ["127.0.0.1", "0.0.0.0", "::1"]
+
+
 def test_guard_rejects_cross_origin_writes(monkeypatch) -> None:
     from mong.web import api as web_api
 

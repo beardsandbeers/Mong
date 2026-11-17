@@ -1,0 +1,43 @@
+name: mong
+
+# Joins the network of the mongo-search stack (~/mongo-deployment), where
+# `nomongo-t` and `gibbidy.lokalho.st` resolve to its containers.
+services:
+  mong:
+    build:
+      context: .
+      target: ${MONG_BUILD_TARGET:-app}
+    image: mong:latest
+    init: true
+    ports:
+      - "${MONG_BIND_IP:-0.0.0.0}:${MONG_PORT:-5050}:5050"
+    environment:
+      NOMONGOT_ADDRESS: nomongo-t:27028
+      NOMONGOT_CREDENTIALS_DIR: /run/mong/nomongo-t
+      MONGODB_URI: ${MONGO_URI:-}
+      MONG_ALLOWED_HOSTS: ${MONG_ALLOWED_HOSTS:-}
+    volumes:
+      - type: volume
+        source: nomongo-secrets
+        target: /run/mong/nomongo-t/admin.token
+        read_only: true
+        volume:
+          subpath: admin-token
+      - type: volume
+        source: nomongo-secrets
+        target: /run/mong/nomongo-t/server.crt
+        read_only: true
+        volume:
+          subpath: tls/internal-ca.pem
+    networks:
+      - mongo-search
+
+networks:
+  mongo-search:
+    external: true
+    name: mongo-search_default
+
+volumes:
+  nomongo-secrets:
+    external: true
+    name: mongo-search_nomongo-secrets

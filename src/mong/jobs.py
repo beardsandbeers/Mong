@@ -217,11 +217,15 @@ class JobManager:
             raise ValueError("index_id is required")
         validated = self._validate(kind, params)
         index = self._service.get_index(index_id)
+        if kind in MUTATING_KINDS and index.get("source") == "mongod":
+            raise ValueError(
+                f"{index.get('name') or index_id} is managed by MongoDB; delete its documents in the collection"
+            )
         job = Job(
             kind=kind,
             index_id=index_id,
             index_name=index.get("name") or index_id,
-            params={**validated, "index_type": index.get("type")},
+            params={**validated, "index_type": index.get("type"), "source": index.get("source")},
         )
         with self._lock:
             if kind in MUTATING_KINDS:
@@ -342,7 +346,8 @@ class JobManager:
         query = params.get("query")
         cursor_id: str | None = None
         try:
-            if query is None and not vector:
+            # A MongoDB-managed index browses its collection, so it needs no query even for vectors.
+            if query is None and (not vector or params.get("source") == "mongod"):
                 page = self._service.browse(job.index_id, batch_size=EXPORT_BATCH)
             elif query is None:
                 raise ValueError("a vector index export needs a $vectorSearch query")

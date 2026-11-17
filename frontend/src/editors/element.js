@@ -278,7 +278,7 @@ export class MongQueryEditor extends HTMLElement {
   async _loadMappings() {
     const index = this._indexes.find((item) => item.index_id === this._indexId);
     if (!index?.definition || index.type === "VECTOR_SEARCH") return;
-    const key = `${index.index_id}:${index.generation_id || index.active_revision || ""}`;
+    const key = `${index.index_id}:${index.generation_id || index.active_revision || ""}:${index.desired_revision ?? ""}`;
     if (this._mappingFlight === key) return;
     this._mappingFlight = key;
     const mappings = await loadMappings(index);

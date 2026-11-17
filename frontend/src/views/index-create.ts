@@ -163,7 +163,7 @@ export class MongIndexCreate extends LightElement {
   }
 
   private sourceOptions(kind: "any" | "search") {
-    return this.app.value.indexes.filter((index) => kind === "any" || index.type === "SEARCH");
+    return this.app.value.indexes.filter((index) => kind === "any" || capabilities(index).exportMappings);
   }
 
   private async next(): Promise<void> {
@@ -196,7 +196,7 @@ export class MongIndexCreate extends LightElement {
         this.type = "SEARCH";
         this.definitionText = prettyJson(definition);
       }
-      this.name = this.uniqueName(`${source.name}_${template.id === "clone" ? "copy" : "static"}`);
+      this.name = this.uniqueName(`${source.index_name ?? source.name}_${template.id === "clone" ? "copy" : "static"}`);
       this.step = 2;
     } catch (error) {
       this.sourceError = errorMessage(error);

@@ -52,7 +52,7 @@ def _forbidden(message: str):
 def guard_request():
     """Block DNS rebinding (unknown Host) and cross-site writes (foreign Origin)."""
     if _hostname(request.host.lower()) not in allowed_hosts():
-        return _forbidden("Host not allowed")
+        return _forbidden("Host not allowed. Add this hostname to MONG_ALLOWED_HOSTS.")
     if request.method not in UNSAFE_METHODS:
         return None
     if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
@@ -98,6 +98,11 @@ def create_app() -> Flask:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Mong admin UI for NoMongo-T")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("MONG_HOST", "127.0.0.1"),
+        help="Interface to listen on (also MONG_HOST; default 127.0.0.1)",
+    )
     parser.add_argument("--port", type=int, default=int(os.environ.get("MONG_PORT", "5050")))
     parser.add_argument(
         "--debug",
@@ -107,4 +112,4 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     app = create_app()
-    app.run(host="127.0.0.1", port=args.port, debug=args.debug, threaded=True)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)

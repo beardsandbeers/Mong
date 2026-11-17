@@ -162,8 +162,8 @@ export const api = {
     request<DeleteByQueryResult>("POST", `/api/indexes/${id(indexId)}/delete-by-query`, body),
   search: (indexId: string, body: SearchRequest, signal?: AbortSignal) =>
     request<QueryPage>("POST", `/api/indexes/${id(indexId)}/search`, body, { signal }),
-  browse: (indexId: string, batchSize: number, signal?: AbortSignal) =>
-    request<QueryPage>("POST", `/api/indexes/${id(indexId)}/browse`, { batch_size: batchSize }, { signal }),
+  browse: (indexId: string, body: { batch_size: number; count?: boolean }, signal?: AbortSignal) =>
+    request<QueryPage>("POST", `/api/indexes/${id(indexId)}/browse`, body, { signal }),
   more: (cursorId: string, indexId: string, batchSize: number, page: number, signal?: AbortSignal) =>
     request<QueryPage>(
       "POST",

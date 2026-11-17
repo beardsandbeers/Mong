@@ -46,7 +46,10 @@ function checkPath(path, valueNode, schema, fields, diags) {
     return;
   }
   if (!info.types.size) {
-    diags.push(diag(from, to, "warning", `Field "${path}" is not in the indexed field list`));
+    const message = fields.observedOrigin === "sampled"
+      ? `Field "${path}" was not found in the document sample; it may still be indexed dynamically`
+      : `Field "${path}" is not in the indexed field list`;
+    diags.push(diag(from, to, "warning", message));
     return;
   }
   if (accepted && !typesCompatible(info.types, accepted)) {
@@ -54,7 +57,10 @@ function checkPath(path, valueNode, schema, fields, diags) {
     return;
   }
   if (info.origin === "dynamic") {
-    diags.push(diag(from, to, "warning", `Field "${path}" is not in the indexed field list`));
+    const message = fields.observedOrigin === "sampled"
+      ? `Field "${path}" was not found in the document sample; it may still be indexed dynamically`
+      : `Field "${path}" is not in the indexed field list`;
+    diags.push(diag(from, to, "warning", message));
   }
 }
 

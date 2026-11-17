@@ -1,5 +1,8 @@
 export type IndexType = "SEARCH" | "VECTOR_SEARCH";
 
+/** `mongot`: a standalone index Mong manages. `mongod`: a search index MongoDB manages on a collection. */
+export type IndexSource = "mongot" | "mongod";
+
 export interface IndexStatsSnapshot {
   documents: number | null;
   size_bytes: number | null;
@@ -20,6 +23,13 @@ export interface IndexInfo {
   failure_message: string | null;
   definition: Record<string, unknown> | null;
   stats?: IndexStatsSnapshot;
+  source?: IndexSource;
+  /** MongoDB-managed indexes only. `name` is then `database.collection/index_name`. */
+  database?: string;
+  collection?: string;
+  index_name?: string;
+  queryable?: boolean;
+  mongot_id?: string | null;
 }
 
 export interface IndexMetrics {
@@ -88,6 +98,12 @@ export interface Alert {
   index_name?: string | null;
 }
 
+export interface MongodState {
+  enabled: boolean;
+  connected: boolean;
+  error: string | null;
+}
+
 export interface MetricsSummary {
   connected: boolean;
   error: string | null;
@@ -98,6 +114,7 @@ export interface MetricsSummary {
   indexes: SummaryIndex[];
   rpc: RpcStat[];
   alerts: Alert[];
+  mongod?: MongodState;
 }
 
 export interface SeriesSample {

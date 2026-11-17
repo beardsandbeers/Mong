@@ -7,7 +7,7 @@ import type { TabSpec } from "../components/tabs";
 import { toast } from "../components/toast";
 import { track } from "../lib/activity";
 import { api, ApiError, errorMessage } from "../lib/api";
-import { capabilities } from "../lib/capabilities";
+import { capabilities, namespaceOf } from "../lib/capabilities";
 import { download } from "../lib/csv";
 import { canonicalJson, collapseContext, diffLines } from "../lib/diff";
 import { prettyJson } from "../lib/ejson";
@@ -25,6 +25,12 @@ import "./index-storage";
 
 const TABS = ["overview", "definition", "fields", "storage", "data", "danger"] as const;
 type Tab = (typeof TABS)[number];
+/** Field and storage statistics and the danger zone exist only on the standalone API. */
+const READ_ONLY_TABS: readonly Tab[] = ["overview", "definition", "data"];
+
+function tabsFor(index: SummaryIndex): readonly Tab[] {
+  return capabilities(index).readOnly ? READ_ONLY_TABS : TABS;
+}
 
 type DefinitionEditor = HTMLElement & {
   value: string;
@@ -104,15 +110,18 @@ export class MongIndexDetail extends LightElement {
           <h1>${index.name}</h1>
           ${statusPill(index)}
           <span class="badge">${caps.isVector ? "vector" : "search"}</span>
+          ${caps.readOnly
+            ? html`<span class="badge" title="MongoDB manages this index; Mong browses and queries it">MongoDB</span>`
+            : nothing}
           ${recreated
             ? html`<span class="badge" title="This name now points at a new index id. Metrics history restarted.">recreated</span>`
             : nothing}
         </div>
-        <div class="hint mono">${index.index_id}</div>
+        <div class="hint mono">${caps.readOnly ? `mongot id ${index.mongot_id ?? "—"}` : index.index_id}</div>
       </div>
       <div class="page__actions">
         <a class="btn" href=${href("explore", { index: index.name })}>${icon("explore")} Query</a>
-        <a class="btn secondary" href=${href(["indexes", "new"], { from: index.name })}>${icon("copy")} Clone</a>
+        <a class="btn secondary" href=${href(["indexes", "new"], { from: index.name })} title="Copy the definition into a new standalone index">${icon("copy")} Clone</a>
         <button class="btn secondary icon" title="Refresh" @click=${() => this.refresh()}>${icon("refresh")}</button>
       </div>
     </div>`;
@@ -125,7 +134,8 @@ export class MongIndexDetail extends LightElement {
   private tabs(index: SummaryIndex): TabSpec[] {
     const alerts = (this.app.value.summary?.alerts ?? []).filter((alert) => alert.index_id === index.index_id);
     const caps = capabilities(index);
-    return [
+    const shown = tabsFor(index);
+    const tabs: (TabSpec & { id: Tab })[] = [
       { id: "overview", label: "Overview", badge: alerts.length || null },
       { id: "definition", label: "Definition", badge: this.dirty ? "edited" : null },
       { id: "fields", label: "Fields" },
@@ -137,6 +147,7 @@ export class MongIndexDetail extends LightElement {
       },
       { id: "danger", label: "Danger zone" },
     ];
+    return tabs.filter((tab) => shown.includes(tab.id));
   }
 
   // ----- overview -----
@@ -258,6 +269,55 @@ export class MongIndexDetail extends LightElement {
                   Vector fields: ${caps.vectorFields.map((f) => html`<code>${f.path}</code> (${f.numDimensions ?? "?"} dims, ${f.similarity}) `)}
                 </div>`
               : html`<div class="muted">Stored source: ${caps.storedSource}</div>`}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  /** nomongo-t reports no metrics for MongoDB-managed indexes, so this shows what MongoDB reports. */
+  private managedOverview(index: SummaryIndex): TemplateResult {
+    const caps = capabilities(index);
+    const status = indexStatus(index);
+    const alerts = (this.app.value.summary?.alerts ?? []).filter((alert) => alert.index_id === index.index_id);
+    const building = index.desired_revision !== index.active_revision;
+    return html`
+      ${alerts.length
+        ? html`<section class="card">${alertList(alerts, { linkIndexes: false })}</section>`
+        : nothing}
+      <div class="grid kpis">
+        ${this.kpi("Documents", formatNumber(index.metrics?.documents), "in the collection")}
+        ${this.kpi("Status", status.label, index.queryable ? "queryable" : "not queryable", index.queryable ? "" : "warn")}
+        ${this.kpi("Definition version", String(index.active_revision), building ? `version ${index.desired_revision} building` : "")}
+      </div>
+      <div class="grid cols-2">
+        <section class="card">
+          <div class="card__head"><h2>Details</h2></div>
+          <div class="card__body">
+            <dl class="dl">
+              <dt>Collection</dt><dd class="mono">${namespaceOf(index)}</dd>
+              <dt>Index name</dt><dd class="mono">${index.index_name}</dd>
+              <dt>Status</dt><dd>${index.lifecycle_state} <span class="muted small">${status.detail}</span></dd>
+              <dt>Queryable</dt><dd>${index.queryable ? "yes" : "no"}</dd>
+              <dt>mongot id</dt><dd class="mono small">${index.mongot_id ?? "—"}</dd>
+              ${index.failure_message
+                ? html`<dt>Failure</dt><dd style="color:var(--danger)">${index.failure_message}</dd>`
+                : nothing}
+            </dl>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card__head"><h2>What you can do here</h2></div>
+          <div class="card__body stack small">
+            ${this.capability("Browse documents", caps.browse, caps.reasons.browse)}
+            ${this.capability("Search queries", caps.search, caps.reasons.search)}
+            ${this.capability("Vector queries", caps.vector, caps.reasons.vector)}
+            ${this.capability("Edit documents", caps.editable, caps.reasons.editable)}
+            <div class="muted">
+              MongoDB builds this index from the collection through replication. Its definition changes with
+              <code>updateSearchIndex</code> in MongoDB. nomongo-t's standalone API does not report it, so size, query
+              rates, and storage statistics are not available here.
+            </div>
           </div>
         </section>
       </div>
@@ -390,11 +450,24 @@ export class MongIndexDetail extends LightElement {
             <button class="btn secondary sm" @click=${() => this.loadDefinition(index)}>Load revision ${index.desired_revision}</button>
           </div>`
         : nothing}
+      ${caps.readOnly
+        ? html`<div class="alert" data-tone="info">
+            ${icon("info", 18)}
+            <div class="alert__body">
+              <div class="alert__title">MongoDB manages this definition</div>
+              <div class="small">
+                Change it with <code>db.${index.collection}.updateSearchIndex("${index.index_name}", …)</code> in the
+                <code>${index.database}</code> database. MongoDB then rebuilds the index from the collection. Clone copies it
+                into a new standalone index.
+              </div>
+            </div>
+          </div>`
+        : nothing}
       <section class="card">
         <div class="card__head">
           <div>
             <h2>Definition</h2>
-            <div class="hint">Revision ${this.baseRevision ?? "—"}${this.dirty ? " · unsaved edits" : ""}</div>
+            <div class="hint">${caps.readOnly ? "Version" : "Revision"} ${this.baseRevision ?? "—"}${this.dirty ? " · unsaved edits" : ""}</div>
           </div>
           <div class="row">
             <button class="btn ghost sm" @click=${() => navigator.clipboard.writeText(this.draft).then(() => toast("Copied definition"))}>
@@ -414,11 +487,12 @@ export class MongIndexDetail extends LightElement {
           <mong-definition-editor
             .mode=${index.type}
             .index=${index}
+            .readonly=${caps.readOnly}
             .value=${this.draft}
             @input=${(e: Event) => (this.draft = (e.target as DefinitionEditor).value)}
             @run=${(e: Event) => {
               e.preventDefault();
-              void this.saveDefinition(index);
+              if (!caps.readOnly) void this.saveDefinition(index);
             }}
           ></mong-definition-editor>
           ${this.dirty
@@ -429,12 +503,14 @@ export class MongIndexDetail extends LightElement {
             : nothing}
           ${this.defError ? html`<div class="alert" data-tone="danger">${icon("alert", 16)}<div class="alert__body">${this.defError}</div></div>` : nothing}
         </div>
-        <div class="drawer__foot">
-          <button class="btn secondary" ?disabled=${!this.dirty} @click=${() => (this.draft = this.baseText)}>Discard edits</button>
-          <button class="btn danger" ?disabled=${!this.dirty || this.saving || serverMoved} @click=${() => this.saveDefinition(index)}>
-            ${this.saving ? "Saving…" : "Save and rebuild…"}
-          </button>
-        </div>
+        ${caps.readOnly
+          ? nothing
+          : html`<div class="drawer__foot">
+              <button class="btn secondary" ?disabled=${!this.dirty} @click=${() => (this.draft = this.baseText)}>Discard edits</button>
+              <button class="btn danger" ?disabled=${!this.dirty || this.saving || serverMoved} @click=${() => this.saveDefinition(index)}>
+                ${this.saving ? "Saving…" : "Save and rebuild…"}
+              </button>
+            </div>`}
       </section>
     `;
   }
@@ -463,8 +539,8 @@ export class MongIndexDetail extends LightElement {
 
   // ----- render -----
 
-  private panel(index: SummaryIndex): TemplateResult {
-    switch (this.tab as Tab) {
+  private panel(index: SummaryIndex, tab: string): TemplateResult {
+    switch (tab as Tab) {
       case "definition":
         return this.definition(index);
       case "fields":
@@ -476,7 +552,7 @@ export class MongIndexDetail extends LightElement {
       case "danger":
         return html`<mong-index-danger .index=${index}></mong-index-danger>`;
       default:
-        return this.overview(index);
+        return capabilities(index).readOnly ? this.managedOverview(index) : this.overview(index);
     }
   }
 
@@ -495,11 +571,11 @@ export class MongIndexDetail extends LightElement {
           : html`<span class="skeleton" style="width:240px;height:24px"></span><span class="skeleton block"></span>`}
       </div>`;
     }
-    const tab = (TABS as readonly string[]).includes(this.tab) ? this.tab : "overview";
+    const tab = (tabsFor(index) as readonly string[]).includes(this.tab) ? this.tab : "overview";
     return html`<div class="page">
       ${this.header(index)}
       <mong-tabs .tabs=${this.tabs(index)} .active=${tab} @tab-change=${(e: CustomEvent<string>) => this.setTab(e.detail)}></mong-tabs>
-      ${this.panel(index)}
+      ${this.panel(index, tab)}
     </div>`;
   }
 }

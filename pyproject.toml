@@ -18,6 +18,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pymongo>=4.6",
+]
+mongod = [
+    "pymongo>=4.6",
 ]
 
 [project.scripts]

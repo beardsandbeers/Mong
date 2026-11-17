@@ -1,4 +1,4 @@
-import { StateEffect, StateField } from "./codemirror.js";
+import { Compartment, EditorState, EditorView, StateEffect, StateField } from "./codemirror.js";
 import { definitionCompletionSource } from "./definition-complete.js";
 import { lintDefinition } from "./definition-lint.js";
 import { FieldIndex, loadMappings } from "./fields.js";
@@ -21,6 +21,10 @@ function readMode(value) {
   return value === "VECTOR_SEARCH" ? "VECTOR_SEARCH" : "SEARCH";
 }
 
+function readOnlyExtensions(readonly) {
+  return readonly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+}
+
 export class MongDefinitionEditor extends HTMLElement {
   constructor() {
     super();
@@ -35,6 +39,8 @@ export class MongDefinitionEditor extends HTMLElement {
     this._status = null;
     this._resize = null;
     this._label = null;
+    this._readonly = false;
+    this._editability = new Compartment();
   }
 
   static get observedAttributes() {
@@ -65,7 +71,7 @@ export class MongDefinitionEditor extends HTMLElement {
     const created = createJsonEditor({
       parent: this,
       doc: this._pendingValue ?? "",
-      extensions: [modelField],
+      extensions: [modelField, this._editability.of(readOnlyExtensions(this._readonly))],
       completionSource: definitionCompletionSource((context) => context.state.field(modelField)),
       lintSource: (view) => lintDefinition(view.state, view.state.field(modelField)),
       lintNeedsRefresh: (update) => update.transactions.some(
@@ -122,6 +128,15 @@ export class MongDefinitionEditor extends HTMLElement {
     this._view.dispatch({ changes: { from: 0, to: this._view.state.doc.length, insert: text } });
     this._silence = false;
     this._renderStatus();
+  }
+
+  get readonly() {
+    return this._readonly;
+  }
+
+  set readonly(value) {
+    this._readonly = Boolean(value);
+    this._view?.dispatch({ effects: this._editability.reconfigure(readOnlyExtensions(this._readonly)) });
   }
 
   get mode() {

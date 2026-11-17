@@ -1,4 +1,5 @@
 import { html, nothing } from "lit";
+import { capabilities } from "../lib/capabilities";
 import { navigate } from "../lib/router";
 import { appStore, refreshSummary } from "../lib/state";
 import { LightElement } from "./base";
@@ -64,6 +65,7 @@ function commands(): Command[] {
     { id: "act:refresh", label: "Refresh status", group: "Action", glyph: "refresh", run: () => refreshSummary({ force: true }) },
   ];
   for (const index of appStore.value.indexes) {
+    const readOnly = capabilities(index).readOnly;
     base.push(
       {
         id: `idx:${index.name}`,
@@ -83,19 +85,21 @@ function commands(): Command[] {
       },
       {
         id: `def:${index.name}`,
-        label: `Edit definition of ${index.name}`,
+        label: `${readOnly ? "Definition" : "Edit definition"} of ${index.name}`,
         group: "Index",
         glyph: "code",
         run: () => navigate(["indexes", index.name, "definition"]),
       },
-      {
+    );
+    if (!readOnly) {
+      base.push({
         id: `fields:${index.name}`,
         label: `Fields of ${index.name}`,
         group: "Index",
         glyph: "tree",
         run: () => navigate(["indexes", index.name, "fields"]),
-      },
-    );
+      });
+    }
   }
   return base;
 }

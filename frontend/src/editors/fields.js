@@ -116,6 +116,7 @@ export class FieldIndex {
     this.mapped = new Map();
     this.observed = new Map();
     this.hasObserved = false;
+    this.observedOrigin = "indexed";
     this.observedRootDynamic = false;
     this.typeSets = typeSetMap(definition);
     const dynamic = definition?.mappings?.dynamic;
@@ -151,6 +152,7 @@ export class FieldIndex {
   applyObserved(mappings) {
     if (!mappings || typeof mappings !== "object") return this;
     this.observed = new Map();
+    this.observedOrigin = mappings.fieldSource === "sampled" ? "sampled" : "indexed";
     walkMapping(mappings.fields, "", this.observed);
     for (const path of this.mapped.keys()) this.observed.delete(path);
     this.observedRootDynamic = mappings.dynamic === undefined ? false : mappings.dynamic;
@@ -165,7 +167,7 @@ export class FieldIndex {
     }
     if (this.observed.has(path)) {
       const entry = this.observed.get(path);
-      return { path, ...cloneEntry(entry), origin: "indexed", allowed: true };
+      return { path, ...cloneEntry(entry), origin: this.observedOrigin, allowed: true };
     }
     const dynamic = this.dynamicScope(path);
     if (dynamic.allowed) {
@@ -206,7 +208,7 @@ export class FieldIndex {
     for (const [path, entry] of this.mapped) push(path, entry, "mapped");
     for (const [path, entry] of this.observed) {
       if (this.mapped.has(path)) continue;
-      push(path, entry, "indexed");
+      push(path, entry, this.observedOrigin);
     }
     out.sort((a, b) => a.path.localeCompare(b.path));
     return out;
@@ -263,23 +265,29 @@ export function clearMappingCache() {
 }
 
 async function fetchMappings(index, fetchImpl) {
+  // MongoDB supplies sampled suggestions separately from standalone mapping exports.
+  const endpoint = index.source === "mongod" ? "field-suggestions" : "mappings";
   const params = new URLSearchParams();
   const generation = index.generation_id || "";
   if (generation) params.set("generation_id", generation);
   const query = params.toString();
-  const url = `/api/indexes/${encodeURIComponent(index.index_id)}/mappings${query ? `?${query}` : ""}`;
+  const url = `/api/indexes/${encodeURIComponent(index.index_id)}/${endpoint}${query ? `?${query}` : ""}`;
   const response = await fetchImpl(url);
   if (!response?.ok) return null;
   const body = await response.json();
-  return body?.mappings || null;
+  if (!body?.mappings) return null;
+  return body.source === "sampled" ? { ...body.mappings, fieldSource: "sampled" } : body.mappings;
 }
 
-/** Exported index mapping, cached per index id and generation. Vector indexes have none. */
+/** Field hints, cached per index definition and generation. Vector indexes have none. */
 export function loadMappings(index, fetchImpl = globalThis.fetch) {
-  const key = `${index.index_id}:${index.generation_id || index.active_revision || ""}`;
+  const key = `${index.index_id}:${index.generation_id || index.active_revision || ""}:${index.desired_revision ?? ""}`;
   if (!mappingCache.has(key)) {
     const pending = fetchMappings(index, fetchImpl).then(
-      (mappings) => mappings,
+      (mappings) => {
+        if (!mappings) mappingCache.delete(key);
+        return mappings;
+      },
       () => {
         mappingCache.delete(key);
         return null;

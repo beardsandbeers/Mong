@@ -161,7 +161,7 @@ export class MongDocDrawer extends LightElement {
     if (!hit) return html`<mong-drawer .open=${false}></mong-drawer>`;
     const caps = capabilities(this.index);
     const canEdit = caps.editable && hit.hasSource;
-    const editReason = !hit.hasSource
+    const editReason = !hit.hasSource && !caps.readOnly
       ? "This hit has no stored source, so only its _id is known."
       : caps.reasons.editable;
     const targets = similarTargets(hit.doc, this.indexes);
@@ -209,7 +209,12 @@ export class MongDocDrawer extends LightElement {
               </button>`
             : nothing}
           <span class="spacer"></span>
-          <button class="btn danger-outline" ?disabled=${this.busy || hit.id === undefined || caps.isVector && !hit.id} @click=${() => this.deleteDoc()}>
+          <button
+            class="btn danger-outline"
+            ?disabled=${this.busy || caps.readOnly || hit.id === undefined || caps.isVector && !hit.id}
+            title=${caps.readOnly ? (caps.reasons.editable ?? "") : ""}
+            @click=${() => this.deleteDoc()}
+          >
             ${icon("trash", 14)} Delete
           </button>
           <button class="btn" ?disabled=${!canEdit} title=${canEdit ? "" : editReason ?? ""} @click=${() => (this.editing = true)}>

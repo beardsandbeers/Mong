@@ -44,6 +44,24 @@ function messages(text, queryModel = model()) {
   return lintQuery(state, queryModel).map((item) => item.message);
 }
 
+test("sampled MongoDB fields complete and lint without claiming an exhaustive mapping", () => {
+  const index = {
+    index_id: "mongod:crm:contacts:contacts_search", source: "mongod", name: "crm.contacts/contacts_search", type: "SEARCH",
+    definition: { mappings: { dynamic: true, fields: { account_id: { type: "token" } } } },
+  };
+  const queryModel = model({ indexes: [index], indexId: index.index_id, mappings: {
+    [index.index_id]: { fieldSource: "sampled", dynamic: true, fields: { full_name: [{ type: "string" }] } },
+  } });
+  const result = queryCompletion({ ...withCursor('{"compound":{"must":[{"text":{"path":"full|","query":"Alex"}}]}}'), explicit: false }, queryModel);
+  assert.deepEqual(labels(result), ["full_name"]);
+  assert.match(result.options[0].detail, /sampled/);
+  assert.deepEqual(messages('{"text":{"path":"full_name","query":"Alex"}}', queryModel), []);
+  assert.ok(messages('{"text":{"path":"account_id","query":"x"}}', queryModel).some((message) => /token/.test(message)));
+  const unknown = messages('{"text":{"path":"rare_field","query":"x"}}', queryModel);
+  assert.ok(unknown.some((message) => /not found in the document sample/.test(message)));
+  assert.ok(unknown.every((message) => !/not in this index mapping/.test(message)));
+});
+
 test("formatJson pretty-prints a search query and keeps key order", () => {
   assert.equal(
     formatJson('{"text":{"query":"coffee","path":"title"}}'),

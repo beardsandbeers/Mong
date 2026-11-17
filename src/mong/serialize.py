@@ -98,6 +98,7 @@ def index_to_dict(index: api.IndexDescription) -> dict[str, Any]:
     return {
         "index_id": index.index_id,
         "name": index.name,
+        "source": "mongot",
         "type": INDEX_TYPE_NAMES.get(index.type, str(index.type)),
         "type_code": index.type,
         "desired_revision": index.desired_revision,

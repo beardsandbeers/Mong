@@ -132,6 +132,11 @@ function countOf(metadata: Record<string, unknown> | null): { value: number; exa
   return null;
 }
 
+/** Browse on a MongoDB-managed index reads the collection instead of searching the index. */
+function browsesCollection(index: SummaryIndex, mode: Mode): boolean {
+  return mode === "browse" && capabilities(index).readOnly;
+}
+
 export class MongExplore extends LightElement {
   static properties = {
     params: { attribute: false },
@@ -486,7 +491,8 @@ export class MongExplore extends LightElement {
     const editor = this.editor;
     const query = editor ? editor.getQuery() : (JSON.parse(this.text || "{}") as Record<string, unknown>);
     if (this.mode === "search") {
-      if (caps.storedSource !== "none" && query.returnStoredSource === undefined) query.returnStoredSource = true;
+      // mongod looks up full documents itself, which stored source may only cover in part.
+      if (!caps.readOnly && caps.storedSource !== "none" && query.returnStoredSource === undefined) query.returnStoredSource = true;
       if (this.prefs.count && query.count === undefined) query.count = { type: "lowerBound" };
     }
     return query;
@@ -513,16 +519,18 @@ export class MongExplore extends LightElement {
     const text = mode === "browse" ? "" : this.text;
     const started = performance.now();
     try {
-      const page = await api.search(
-        index.index_id,
-        {
-          query,
-          vector: mode === "vector",
-          batch_size: this.prefs.batchSize,
-          explain: this.prefs.explain || undefined,
-        },
-        controller.signal,
-      );
+      const page = browsesCollection(index, mode)
+        ? await api.browse(index.index_id, { batch_size: this.prefs.batchSize, count: this.prefs.count }, controller.signal)
+        : await api.search(
+          index.index_id,
+          {
+            query,
+            vector: mode === "vector",
+            batch_size: this.prefs.batchSize,
+            explain: this.prefs.explain || undefined,
+          },
+          controller.signal,
+        );
       const e2e = performance.now() - started;
       this.hits = normalizeHits(page.results);
       this.metadata = page.metadata;
@@ -715,7 +723,7 @@ export class MongExplore extends LightElement {
     await startJob(ran.index, {
       kind: "export",
       format,
-      query,
+      query: browsesCollection(ran.index, ran.mode) ? null : query,
       vector: ran.mode === "vector",
       estimate: count?.value || undefined,
     });
@@ -837,6 +845,16 @@ export class MongExplore extends LightElement {
     this.menu = this.menu === name ? null : name;
   }
 
+  private indexOptions(): TemplateResult {
+    const option = (index: SummaryIndex) =>
+      html`<option value=${index.name} ?selected=${index.name === this.indexName}>${index.name}</option>`;
+    const managed = this.indexes.filter((index) => capabilities(index).readOnly);
+    if (!managed.length) return html`${this.indexes.map(option)}`;
+    const standalone = this.indexes.filter((index) => !capabilities(index).readOnly);
+    return html`${standalone.length ? html`<optgroup label="Standalone">${standalone.map(option)}</optgroup>` : nothing}
+      <optgroup label="Managed by MongoDB">${managed.map(option)}</optgroup>`;
+  }
+
   private renderRail(caps: Capabilities): TemplateResult {
     const filter = this.fieldFilter.trim().toLowerCase();
     const fields = this.fields.filter((field) => !filter || field.path.toLowerCase().includes(filter));
@@ -849,11 +867,12 @@ export class MongExplore extends LightElement {
             <div class="card__body stack" style="gap:8px">
               <label class="label" for="explore-index">Index</label>
               <select id="explore-index" .value=${this.indexName} @change=${(e: Event) => this.select((e.target as HTMLSelectElement).value)}>
-                ${this.indexes.map((index) => html`<option value=${index.name} ?selected=${index.name === this.indexName}>${index.name}</option>`)}
+                ${this.indexOptions()}
               </select>
               ${this.index
                 ? html`<div class="row small muted" style="gap:6px;flex-wrap:wrap">
                     <span class="badge">${caps.isVector ? "Vector" : "Search"}</span>
+                    ${caps.readOnly ? html`<span class="badge" title="MongoDB manages this index; Mong only reads it">MongoDB</span>` : nothing}
                     <span>${formatNumber(this.index.metrics?.documents ?? null)} docs</span>
                     <span>· stored source: ${caps.storedSource}</span>
                   </div>`
@@ -862,6 +881,9 @@ export class MongExplore extends LightElement {
           </div>`}
       <div class="card">
         <div class="card__head"><h3>Fields</h3><span class="hint">${this.fields.length}</span></div>
+        ${this.fields.some((field) => field.origin === "sampled")
+          ? html`<p class="hint">Dynamic field suggestions come from a document sample and may be incomplete.</p>`
+          : nothing}
         <div class="card__body stack" style="gap:6px">
           ${this.fields.length > 8
             ? html`<input type="search" placeholder="Filter fields" .value=${this.fieldFilter} @input=${(e: Event) => (this.fieldFilter = (e.target as HTMLInputElement).value)} />`
@@ -869,7 +891,7 @@ export class MongExplore extends LightElement {
           <div class="list" style="max-height:280px;overflow:auto">
             ${fields.length
               ? fields.map(
-                  (field) => html`<button title="Insert ${field.path} into the query" @click=${() => this.insertField(field)}>
+                  (field) => html`<button title="Insert ${field.path} into the query (${field.origin})" @click=${() => this.insertField(field)}>
                     <span class="grow mono small">${field.path}</span>
                     <span class="muted small">${field.types.join(", ")}</span>
                   </button>`,
@@ -1072,7 +1094,7 @@ export class MongExplore extends LightElement {
 
   private renderResultsHead(): TemplateResult {
     const view = this.prefs.view;
-    const canWrite = Boolean(this.index);
+    const canWrite = Boolean(this.index) && !this.caps.readOnly;
     return html`<div class="card__head" style="flex-wrap:wrap;gap:8px">
       <div class="results-meta">
         <h3>Results</h3>
@@ -1106,7 +1128,7 @@ export class MongExplore extends LightElement {
           : nothing}
       </span>
       <span style="position:relative" data-menu>
-        <button class="btn secondary sm" ?disabled=${!canWrite} @click=${(e: Event) => this.toggleMenu("add", e)}>${icon("plus", 14)} Add ${icon("chevronDown", 12)}</button>
+        <button class="btn secondary sm" ?disabled=${!canWrite} title=${this.caps.readOnly ? (this.caps.reasons.editable ?? "") : ""} @click=${(e: Event) => this.toggleMenu("add", e)}>${icon("plus", 14)} Add ${icon("chevronDown", 12)}</button>
         ${this.menu === "add"
           ? html`<div class="popover menu" role="menu" style="right:0;top:32px">
               <button @click=${() => ((this.menu = null), (this.drawer = "upsert"))}>${icon("edit", 14)} Upsert documents</button>
@@ -1175,7 +1197,7 @@ export class MongExplore extends LightElement {
       .columns=${this.tableColumns()}
       .rowKey=${(hit: Hit) => hit.key}
       .selected=${this.selected}
-      selectable
+      ?selectable=${!capabilities(this.ranQuery.index).readOnly}
       clickable
       max-height="620"
       @row-click=${(e: CustomEvent<Hit>) => (this.openHit = e.detail)}

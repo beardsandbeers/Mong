@@ -54,6 +54,16 @@ def _wait(manager: JobManager, job_id: str) -> dict[str, Any]:
     raise AssertionError("job did not finish")
 
 
+def test_mongod_indexes_refuse_deletes_but_export_without_a_query(tmp_path: Path) -> None:
+    service = FakeService()
+    service.get_index = lambda index_id: {"index_id": index_id, "name": "crm.vectors/emb", "type": "VECTOR_SEARCH", "source": "mongod"}
+    manager = JobManager(service, export_dir=tmp_path)
+    with pytest.raises(ValueError, match="managed by MongoDB"):
+        manager.create("clear_index", "mongod:crm:vectors:emb")
+    job = manager.create("export", "mongod:crm:vectors:emb", {"format": "ndjson"})
+    assert _wait(manager, job.id)["state"] == "succeeded"
+
+
 def test_clear_index_loops_until_nothing_matches(tmp_path: Path) -> None:
     service = FakeService(documents=25_000)
     manager = JobManager(service, export_dir=tmp_path)

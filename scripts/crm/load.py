@@ -1,14 +1,15 @@
-"""Create CRM search indexes and stream faker documents into mongot.
+"""Stream generated CRM documents through a pluggable writer.
 
-Indexes are instance-wide. A definition change replaces the index with an empty
-generation, so the following upsert reingests the documents.
+``scripts.crm.targets`` builds the writer. ``--target mongot`` upserts search
+indexes; ``--target mongod`` bulk-upserts collections. This module only batches,
+shards, and resumes. It calls ``upsert_many`` on one address at a time, so a
+worker fills a same-target batch of contacts or opportunities while other
+workers write concurrently. Each account document is sent as soon as it is
+generated, before that account's children. ``batch_size`` 1 sends every
+document on its own.
 
-Ingest fans the account range out to worker processes. Each worker has its own
-input queue and its own mongot client, generates the accounts it is given, and
-upserts one index at a time. ``upsert_many`` cannot mix indexes, so a worker
-fills a same-index batch of contacts or opportunities while other workers write
-concurrently. Each account document is sent as soon as it is generated, before
-that account's children. ``batch_size`` 1 sends every document on its own.
+The first argument to ``upsert_many`` is a mongot index id or a mongod
+collection name. Creating the index or collection happens before streaming.
 """
 
 from __future__ import annotations
@@ -23,108 +24,25 @@ from typing import Any, Callable, Protocol, Sequence
 
 from tqdm import tqdm
 
-from mong.service import MongotService
 from scripts.crm.generate import ENTITY_KEYS, CrmGenerator, CrmSpec
+from scripts.crm.schema import search_definition as search_definition
+from scripts.crm.targets import ensure_targets as ensure_targets
+from scripts.ingest.mongot import ensure_search_index as ensure_search_index
+from scripts.ingest.mongot import find_search_index as find_search_index
 
 # Datasets smaller than this stay in-process: spawning workers costs more than it saves.
 _INLINE_ACCOUNT_LIMIT = 32
 _MAX_WORKERS = 8
-
-RELATIONSHIP_FIELDS: dict[str, tuple[str, ...]] = {
-    "accounts": ("_id",),
-    "contacts": ("_id", "account_id", "opportunity_ids"),
-    "opportunities": ("_id", "account_id", "contact_ids", "primary_contact_id"),
-}
-
-
-def search_definition(entity: str) -> dict[str, Any]:
-    """Dynamic mapping plus token-indexed id fields so `equals`/`in` lookups can follow links."""
-    return {
-        "mappings": {
-            "dynamic": True,
-            "fields": {path: {"type": "token"} for path in RELATIONSHIP_FIELDS.get(entity, ("_id",))},
-        },
-        "storedSource": True,
-    }
+# Walking every account to sum child documents is too slow past this size.
+# Larger runs start immediately and the bar measures accounts, which is known
+# up front, so it still has a total and an ETA.
+_EXACT_COUNT_LIMIT = 100_000
 
 
 class Upserter(Protocol):
-    def upsert_many(self, index_id: str, documents: list[dict[str, Any]], *, concern: str) -> Any: ...
-
-
-def find_search_index(service: MongotService, name: str) -> dict[str, Any] | None:
-    for index in service.list_indexes():
-        if index.get("name") == name and str(index.get("type", "")).upper() == "SEARCH":
-            return index
-    return None
-
-
-# 0.7 and later write these when a definition omits them. They are not a definition change.
-_DEFAULT_ANALYZER = "lucene.standard"
-
-
-def definitions_match(stored: Any, wanted: dict[str, Any]) -> bool:
-    """True when ``stored`` is ``wanted``, ignoring server-filled default analyzers."""
-    if stored == wanted:
-        return True
-    if not isinstance(stored, dict):
-        return False
-    normalized = dict(stored)
-    for key in ("analyzer", "searchAnalyzer"):
-        if key not in wanted and normalized.get(key) == _DEFAULT_ANALYZER:
-            normalized.pop(key)
-    return normalized == wanted
-
-
-def ensure_search_index(
-    service: MongotService,
-    *,
-    name: str,
-    definition: dict[str, Any],
-) -> tuple[dict[str, Any], str]:
-    """Return (index, action) where action is 'created', 'updated', or 'existing'.
-
-    ``updated`` means UpdateIndex replaced the index with an empty generation.
-    Callers must reingest documents after that.
-    """
-    existing = find_search_index(service, name)
-    if existing is None:
-        index = service.create_index(
-            name=name,
-            index_type="SEARCH",
-            definition=definition,
-        )
-        return index, "created"
-    if not definitions_match(existing.get("definition"), definition):
-        return service.update_index(existing["index_id"], definition=definition), "updated"
-    return existing, "existing"
-
-
-def ensure_targets(
-    service: MongotService,
-    *,
-    entities: Sequence[str],
-    index_suffix: str = "_search",
-    log: Callable[[str], None] = print,
-) -> dict[str, dict[str, Any]]:
-    targets: dict[str, dict[str, Any]] = {}
-    for entity in entities:
-        index_name = f"{entity}{index_suffix}"
-        index, index_action = ensure_search_index(
-            service,
-            name=index_name,
-            definition=search_definition(entity),
-        )
-        note = ""
-        if index_action == "updated":
-            note = "; definition change rebuilt an empty generation"
-        log(f"{index_name}: index {index['index_id']} ({index_action}{note})")
-        targets[entity] = {
-            "index_id": index["index_id"],
-            "index_name": index_name,
-            "index_action": index_action,
-        }
-    return targets
+    def upsert_many(self, index_id: str, documents: list[dict[str, Any]], *, concern: str) -> Any:
+        """Write one batch. ``index_id`` is a mongot index id or a mongod collection name."""
+        ...
 
 
 class IngestFailed(RuntimeError):
@@ -133,6 +51,33 @@ class IngestFailed(RuntimeError):
     def __init__(self, message: str, report: dict[str, Any]):
         super().__init__(message)
         self.report = report
+
+
+def progress_totals(spec: CrmSpec, entities: Sequence[str]) -> dict[str, int] | None:
+    """Exact document totals, or None when summing them would hold up the run."""
+    if spec.run_accounts > _EXACT_COUNT_LIMIT:
+        return None
+    return spec.document_counts(entities)
+
+
+def progress_bar(spec: CrmSpec, totals: dict[str, int] | None) -> tuple[int, str]:
+    """``(total, unit)`` for the progress bar.
+
+    Small runs count documents. Large runs count accounts, which is known
+    without a pre-pass, so the bar and its ETA still move.
+    """
+    if totals is not None:
+        return sum(totals.values()), "doc"
+    return spec.run_accounts, "account"
+
+
+def _accounts_completed(shards: Sequence[tuple[int, int]], watermarks: Sequence[int]) -> int:
+    """Accounts fully written across shards. A watermark is the first account that is not."""
+    done = 0
+    for watermark, (start, count) in zip(watermarks, shards, strict=True):
+        cursor = min(max(watermark, start), start + count)
+        done += cursor - start
+    return done
 
 
 def default_worker_count(accounts: int) -> int:
@@ -154,9 +99,9 @@ def _close_client(client: Any) -> None:
 
 
 def _default_client_factory() -> Upserter:
-    from mong.client import create_client
+    from scripts.ingest.mongot import mongot_writer
 
-    return create_client()
+    return mongot_writer()
 
 
 class _ListUpserter:
@@ -177,7 +122,7 @@ def _list_upserter_factory(calls: Any) -> _ListUpserter:
 
 @dataclass
 class _Buffer:
-    index_id: str
+    index_id: str  # mongot index id, or mongod collection name
     documents: list[dict[str, Any]] = field(default_factory=list)
     first_account: int | None = None
     written: int = 0
@@ -287,25 +232,28 @@ def _report(
     *,
     entities: Sequence[str],
     index_ids: dict[str, str],
-    totals: dict[str, int],
+    totals: dict[str, int] | None,
     written: dict[str, int],
     batches: dict[str, int],
     workers: int,
     interrupted: bool,
     resume_from: int | None,
     error: str | None = None,
+    address_field: str = "index_id",
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "seed": spec.seed,
         "start_account": spec.start_account,
-        "accounts": spec.accounts,
+        "tenants": spec.tenants,
+        "accounts_per_tenant": spec.accounts,
+        "accounts": spec.run_accounts,
         "interrupted": interrupted,
         "resume_from_account": resume_from,
         "workers": workers,
         "entities": {
             entity: {
-                "index_id": index_ids[entity],
-                "expected": totals[entity],
+                address_field: index_ids[entity],
+                "expected": None if totals is None else totals[entity],
                 "written": written.get(entity, 0),
                 "batches": batches.get(entity, 0),
             }
@@ -336,8 +284,11 @@ def _resume_from(shards: Sequence[tuple[int, int]], watermarks: Sequence[int]) -
 
 def _shards(spec: CrmSpec, workers: int) -> list[tuple[int, int]]:
     """Contiguous ``(start, count)`` slices, one per worker. Earlier slices absorb the remainder."""
-    workers = min(workers, spec.accounts)
-    base, extra = divmod(spec.accounts, workers)
+    total = spec.run_accounts
+    workers = min(workers, total)
+    if workers < 1:
+        return []
+    base, extra = divmod(total, workers)
     shards: list[tuple[int, int]] = []
     start = spec.start_account
     for index in range(workers):
@@ -428,11 +379,12 @@ def _stream_inline(
     upserter: Upserter,
     index_ids: dict[str, str],
     entities: Sequence[str],
-    totals: dict[str, int],
+    totals: dict[str, int] | None,
     batch_size: int,
     concern: str,
     progress: bool,
     workers: int,
+    address_field: str,
 ) -> dict[str, Any]:
     session = _IngestSession(
         upserter,
@@ -442,16 +394,24 @@ def _stream_inline(
         concern=concern,
         completed_until=spec.start_account,
     )
+    bar_total, bar_unit = progress_bar(spec, totals)
     bar = tqdm(
-        total=sum(totals.values()),
-        unit="doc",
+        total=bar_total,
+        unit=bar_unit,
         unit_scale=True,
         dynamic_ncols=True,
         disable=not progress,
     )
+    run = (spec.start_account, spec.run_accounts)
 
     def on_flush(_entity: str, count: int) -> None:
-        bar.update(count)
+        if totals is None:
+            done = _accounts_completed((run,), (session.watermark(),))
+            delta = done - bar.n
+            if delta > 0:
+                bar.update(delta)
+        else:
+            bar.update(count)
         bar.set_postfix(
             at_account=session.watermark(),
             **session.snapshot()["written"],
@@ -459,15 +419,20 @@ def _stream_inline(
         )
 
     session.on_flush = on_flush
-    end = spec.start_account + spec.accounts
+    end = spec.start_account + spec.run_accounts
     try:
-        if spec.accounts:
-            session.ingest_accounts(CrmGenerator(spec), spec.start_account, spec.accounts)
+        if spec.run_accounts:
+            session.ingest_accounts(CrmGenerator(spec), spec.start_account, spec.run_accounts)
         if not session.interrupted:
             session.flush_all()
     except KeyboardInterrupt:
         session.interrupted = True
     finally:
+        if totals is None:
+            done = _accounts_completed((run,), (session.watermark(),))
+            delta = done - bar.n
+            if delta > 0:
+                bar.update(delta)
         bar.close()
 
     snap = session.snapshot()
@@ -482,6 +447,7 @@ def _stream_inline(
         workers=workers,
         interrupted=session.interrupted,
         resume_from=resume,
+        address_field=address_field,
     )
 
 
@@ -491,11 +457,12 @@ def _stream_parallel(
     client_factory: Callable[[], Upserter],
     index_ids: dict[str, str],
     entities: Sequence[str],
-    totals: dict[str, int],
+    totals: dict[str, int] | None,
     batch_size: int,
     concern: str,
     progress: bool,
     workers: int,
+    address_field: str,
 ) -> dict[str, Any]:
     """One process per shard. A feeder thread fills each process's queue while the parent collects."""
     shards = _shards(spec, workers)
@@ -538,9 +505,10 @@ def _stream_parallel(
     feeder = threading.Thread(target=feed, name="crm-ingest-feed", daemon=True)
     feeder.start()
 
+    bar_total, bar_unit = progress_bar(spec, totals)
     bar = tqdm(
-        total=sum(totals.values()),
-        unit="doc",
+        total=bar_total,
+        unit=bar_unit,
         unit_scale=True,
         dynamic_ncols=True,
         disable=not progress,
@@ -561,12 +529,16 @@ def _stream_parallel(
     deadline: float | None = None
 
     def note_progress(worker_id: int, snap: dict[str, Any]) -> None:
-        total = sum(snap["written"].values())
-        delta = total - seen[worker_id]
-        seen[worker_id] = total
-        if delta:
-            bar.update(delta)
         latest[worker_id] = snap
+        if totals is None:
+            done = _accounts_completed(shards, [item["watermark"] for item in latest])
+            delta = done - bar.n
+        else:
+            total = sum(snap["written"].values())
+            delta = total - seen[worker_id]
+            seen[worker_id] = total
+        if delta > 0:
+            bar.update(delta)
         written = _empty_counts(entities)
         for item in latest:
             for entity, count in item["written"].items():
@@ -602,6 +574,11 @@ def _stream_parallel(
                 byes.add(worker_id)
     finally:
         stop.set()
+        if totals is None:
+            done = _accounts_completed(shards, [item["watermark"] for item in latest])
+            delta = done - bar.n
+            if delta > 0:
+                bar.update(delta)
         bar.close()
         feeder.join(timeout=5)
         for process in processes:
@@ -643,6 +620,7 @@ def _stream_parallel(
         interrupted=interrupted or error is not None,
         resume_from=None if resume is None else resume,
         error=error,
+        address_field=address_field,
     )
     # A finished watermark on every shard means the durable prefix is the whole run.
     if _resume_from(shards, watermarks) is None:
@@ -671,12 +649,18 @@ def stream_crm_documents(
     concern: str = "indexed",
     progress: bool = True,
     workers: int | None = None,
+    address_field: str = "index_id",
 ) -> dict[str, Any]:
     """Generate the spec and upsert it.
 
+    The default factory writes to mongot. Pass ``client_factory`` from
+    ``scripts.crm.targets`` to write to mongod instead. ``address_field`` is the
+    report key for each writer address (``index_id`` or ``collection``).
+
     ``workers`` 1 (the default for small datasets and for an injected ``upserter``)
     runs in this process. More workers spawn one process per account shard; each
-    process reads account ranges from its own queue and writes through its own client.
+    process reads account ranges from its own queue and writes through its own
+    writer. The factory must be picklable when it runs in another process.
 
     On interrupt, ``resume_from_account`` is the lowest account index whose
     documents may not all have been written.
@@ -688,14 +672,16 @@ def stream_crm_documents(
     if upserter is not None and client_factory is not None:
         raise ValueError("pass either upserter or client_factory")
     if workers is None:
-        workers = 1 if upserter is not None else default_worker_count(spec.accounts)
+        workers = 1 if upserter is not None else default_worker_count(spec.run_accounts)
     if upserter is not None and workers != 1:
         raise ValueError("an in-process upserter supports one worker; pass client_factory to fan out")
 
-    totals = spec.document_counts(entities)
+    totals = progress_totals(spec, entities)
+    # None means the run is large enough that the exact total was skipped, so it is not empty.
+    total_docs = spec.run_accounts if totals is None else sum(totals.values())
     own_client = False
-    if workers == 1 or sum(totals.values()) == 0:
-        if upserter is None and sum(totals.values()) > 0:
+    if workers == 1 or total_docs == 0:
+        if upserter is None and total_docs > 0:
             upserter = (client_factory or _default_client_factory)()
             own_client = True
         if upserter is None:
@@ -710,7 +696,8 @@ def stream_crm_documents(
                 batch_size=batch_size,
                 concern=concern,
                 progress=progress,
-                workers=1 if sum(totals.values()) else 0,
+                workers=1 if total_docs else 0,
+                address_field=address_field,
             )
         finally:
             if own_client:
@@ -725,6 +712,7 @@ def stream_crm_documents(
         concern=concern,
         progress=progress,
         workers=workers,
+        address_field=address_field,
     )
 
 

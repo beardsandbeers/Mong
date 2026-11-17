@@ -1,6 +1,11 @@
 """Deterministic, streaming fake CRM generator (Accounts, Contacts, Opportunities).
 
-Every document is a pure function of ``(seed, entity, account_index, child_index)``:
+Every document is a pure function of ``(seed, entity, account_index, child_index)``.
+
+Accounts are packed into tenants: ``--accounts`` accounts share one ``tenant_id``,
+then the next ``--accounts`` share the next id. ``tenant_id`` is a UUID derived
+from ``(seed, tenant index)``, so the same seed rebuilds the same grouping.
+The id is copied onto each account's contacts and opportunities.
 
 - IDs are UUIDv5 values derived from those coordinates, so any entity can be
   generated (or re-generated) on its own and still reference valid ids in the
@@ -87,6 +92,10 @@ def _derive(seed: int, *parts: Any) -> int:
     return int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
 
 
+def tenant_id(seed: int, tenant: int) -> str:
+    return str(uuid.uuid5(ID_NAMESPACE, f"{seed}:tenant:{tenant}"))
+
+
 def account_id(seed: int, account: int) -> str:
     return str(uuid.uuid5(ID_NAMESPACE, f"{seed}:account:{account}"))
 
@@ -135,6 +144,7 @@ class AccountPlan:
 class CrmSpec:
     seed: int
     accounts: int
+    tenants: int = 1
     contacts_per_account: tuple[int, int] = (1, 4)
     opportunities_per_account: tuple[int, int] = (0, 3)
     start_account: int = 0
@@ -147,12 +157,34 @@ class CrmSpec:
         ):
             if lo < 0 or lo > hi:
                 raise ValueError(f"{label} must satisfy 0 <= min <= max, got {(lo, hi)}")
-        if self.accounts < 0 or self.start_account < 0:
-            raise ValueError("accounts and start_account must be >= 0")
+        if self.accounts < 0 or self.tenants < 0 or self.start_account < 0:
+            raise ValueError("tenants, accounts, and start_account must be >= 0")
+
+    @property
+    def total_accounts(self) -> int:
+        """Accounts in the full dataset: tenants × accounts per tenant."""
+        return self.tenants * self.accounts
+
+    @property
+    def run_accounts(self) -> int:
+        """Accounts this run emits, from ``start_account`` through the end of the dataset."""
+        if self.start_account >= self.total_accounts:
+            return 0
+        return self.total_accounts - self.start_account
+
+    def tenant_index(self, account: int) -> int:
+        """Tenant that owns global account index ``account``.
+
+        Accounts are packed in order: the first ``accounts`` belong to tenant 0,
+        the next ``accounts`` to tenant 1, and so on.
+        """
+        if self.accounts < 1:
+            raise ValueError("cannot place an account when accounts per tenant is 0")
+        return account // self.accounts
 
     @property
     def account_range(self) -> range:
-        return range(self.start_account, self.start_account + self.accounts)
+        return range(self.start_account, self.start_account + self.run_accounts)
 
     def counts(self, account: int) -> tuple[int, int]:
         """(contact_count, opportunity_count); opportunities need at least one contact."""
@@ -215,6 +247,7 @@ class CrmGenerator:
         updated = _between(rng, created, anchor)
         return {
             "_id": account_id(self.spec.seed, account),
+            "tenant_id": tenant_id(self.spec.seed, self.spec.tenant_index(account)),
             "name": fake.company(),
             "account_number": fake.bothify(text="ACC-######"),
             "type": rng.choice(ACCOUNT_TYPES),
@@ -244,6 +277,7 @@ class CrmGenerator:
         last = fake.last_name()
         return {
             "_id": contact_id(seed, account, contact),
+            "tenant_id": tenant_id(seed, self.spec.tenant_index(account)),
             "account_id": account_id(seed, account),
             "opportunity_ids": [opportunity_id(seed, account, opp) for opp in opportunity_indexes],
             "first_name": first,
@@ -278,6 +312,7 @@ class CrmGenerator:
         contact_ids = [contact_id(seed, account, c) for c in contact_indexes]
         return {
             "_id": opportunity_id(seed, account, opportunity),
+            "tenant_id": tenant_id(seed, self.spec.tenant_index(account)),
             "account_id": account_id(seed, account),
             "contact_ids": contact_ids,
             "primary_contact_id": contact_ids[0],
@@ -329,6 +364,7 @@ class CrmGenerator:
 def generate_crm_dataset(
     *,
     account_count: int = 10,
+    tenants: int = 1,
     contacts_per_account: tuple[int, int] = (1, 5),
     opportunities_per_account: tuple[int, int] = (0, 4),
     seed: int = 0,
@@ -337,6 +373,7 @@ def generate_crm_dataset(
     spec = CrmSpec(
         seed=seed,
         accounts=account_count,
+        tenants=tenants,
         contacts_per_account=contacts_per_account,
         opportunities_per_account=opportunities_per_account,
     )

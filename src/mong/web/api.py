@@ -10,10 +10,11 @@ from grpc import RpcError
 
 from mong.jobs import JobConflict, JobManager
 from mong.metrics import MetricsSampler
-from mong.service import MongotService
+from mong.mongod import MongodError, merge_summary
+from mong.sources import SearchService
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
-service = MongotService()
+service = SearchService()
 sampler = MetricsSampler(
     lambda: service.status(include_metrics=True),
     fetch_indexes=lambda: service.list_index_definitions(),
@@ -40,6 +41,8 @@ _RPC_STATUS = {
 
 
 def _from_rpc(exc: Exception):
+    if isinstance(exc, MongodError):
+        return _error(str(exc), exc.status, code=exc.code)
     if isinstance(exc, JobConflict):
         return _error(str(exc), 409, code="JOB_CONFLICT")
     if isinstance(exc, FileNotFoundError):
@@ -159,6 +162,14 @@ def export_mappings(index_id: str):
                 generation_id=request.args.get("generation_id", ""),
             )
         )
+    except Exception as exc:
+        return _from_rpc(exc)
+
+
+@api_bp.get("/indexes/<index_id>/field-suggestions")
+def field_suggestions(index_id: str):
+    try:
+        return jsonify(service.field_suggestions(index_id, generation_id=request.args.get("generation_id", "")))
     except Exception as exc:
         return _from_rpc(exc)
 
@@ -313,6 +324,7 @@ def browse(index_id: str):
             page=int(body.get("page") or 1),
             drain=bool(body.get("drain")),
             generation_id=body.get("generation_id") or "",
+            count=bool(body.get("count")),
         )
         return jsonify(result)
     except Exception as exc:
@@ -348,9 +360,10 @@ def kill_cursor(cursor_id: str):
 @api_bp.get("/metrics/summary")
 def metrics_summary():
     sampler.ensure_started()
-    if _flag("refresh"):
+    refresh = _flag("refresh")
+    if refresh:
         sampler.sample_once(min_gap=2.0)
-    return jsonify(sampler.summary())
+    return jsonify(merge_summary(sampler.summary(), service.mongod.snapshot(refresh=refresh)))
 
 
 @api_bp.get("/metrics/series")

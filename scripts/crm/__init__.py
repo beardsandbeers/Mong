@@ -8,6 +8,7 @@ from scripts.crm.generate import (
     contact_id,
     generate_crm_dataset,
     opportunity_id,
+    tenant_id,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "contact_id",
     "generate_crm_dataset",
     "opportunity_id",
+    "tenant_id",
 ]

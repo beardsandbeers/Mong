@@ -4,6 +4,7 @@ import type { ChartSeries } from "../components/chart";
 import type { Column } from "../components/data-table";
 import { icon } from "../components/icons";
 import { indexStatus, statusPill } from "../components/status-pill";
+import { capabilities } from "../lib/capabilities";
 import {
   formatBytes,
   formatCompact,
@@ -278,7 +279,7 @@ export class MongDashboard extends LightElement {
   }
 
   private charts(samples: SeriesSample[]): TemplateResult {
-    const { indexes } = this.app.value;
+    const indexes = this.app.value.indexes.filter((index) => !capabilities(index).readOnly);
     const t = times(samples);
     const markers = this.series.markers(samples);
     const perIndex = (key: keyof IndexMetrics): ChartSeries[] =>

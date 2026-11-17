@@ -30,7 +30,7 @@ export function indexStatus(index: IndexInfo | SummaryIndex): IndexStatus {
   }
   const lifecycle = String(index.lifecycle_state || "").toUpperCase();
   if (lifecycle && lifecycle !== "READY") {
-    const tone: Tone = lifecycle.includes("FAIL") ? "danger" : "info";
+    const tone: Tone = STATUS_TONES[lifecycle] ?? (lifecycle.includes("FAIL") ? "danger" : "info");
     return { tone, label: titleCase(lifecycle), detail: `Lifecycle state ${lifecycle}` };
   }
   if (index.desired_revision !== index.active_revision) {
