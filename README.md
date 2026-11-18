@@ -72,7 +72,8 @@ The UI has four areas:
   - **Storage**: counts, sizes, memory domains, and the shared and unattributed buckets. Values marked `*` are partial measurements; `—` means the server could not measure it. Statistics load on demand and are never polled.
   - **Data**: Explore scoped to the index.
   - **Danger zone**: delete by query (a dry-run count first, then the delete as a job), delete all documents (a job), and drop.
-- **Explore**: Browse, Search, and Vector modes, enabled by what the index supports. Browse needs stored source; Vector needs a vector index.
+- **Explore** has Browse, Search, Aggregate, and Vector tabs. The selected index determines which tabs are available.
+  - **Aggregate** runs facet queries on search indexes. Add an indexed field or a template, then inspect results in charts, bucket tables, or raw metadata.
   - **Query editor**: completes operators, field paths from the definition and the observed mapping, and index names, and flags mismatches such as `text` on a `token` field. An optional `"index"` key stays in sync with the index picker and is not sent to mongot. Drag the grip under it to resize; the height is remembered.
   - **Results**: table, tree, or raw view, with load-more cursor paging, Count matches (adds `count: {type: "lowerBound"}`), and explain (plan, timings, or all plans) rendered as a tree.
   - **Search meta**: the results header shows hits loaded, matches, and end-to-end and mongot latency per page. A Search meta card shows the full metadata (count, facets).

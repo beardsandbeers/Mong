@@ -20,6 +20,7 @@ const PATHS: Record<string, SVGTemplateResult> = {
   dashboard: svg`<rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/>`,
   layers: svg`<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>`,
   explore: svg`<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6M11 8v6"/>`,
+  analytics: svg`<path d="M4 4v16h16M9 16v-4m5 4V7m5 9v-6"/>`,
   activity: svg`<path d="M3 12h4l3-8 4 16 3-8h4"/>`,
   alert: svg`<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/>`,
   check: svg`<path d="m5 12 5 5 9-10"/>`,

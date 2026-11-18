@@ -11,14 +11,16 @@ export interface TabSpec {
 
 /** Tab strip. Emits `tab-change` with the tab id; the owner renders the panel. */
 export class MongTabs extends LightElement {
-  static properties = { tabs: { attribute: false }, active: { type: String } };
+  static properties = { tabs: { attribute: false }, active: { type: String }, label: { type: String } };
   declare tabs: TabSpec[];
   declare active: string;
+  declare label: string;
 
   constructor() {
     super();
     this.tabs = [];
     this.active = "";
+    this.label = "";
   }
 
   private select(id: string): void {
@@ -35,7 +37,7 @@ export class MongTabs extends LightElement {
   }
 
   render() {
-    return html`<div class="tabs" role="tablist" @keydown=${this.onKey}>
+    return html`<div class="tabs" role="tablist" aria-label=${this.label || nothing} @keydown=${this.onKey}>
       ${this.tabs.map(
         (tab) => html`<button
           type="button"

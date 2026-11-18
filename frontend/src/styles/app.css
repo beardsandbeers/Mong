@@ -1548,6 +1548,192 @@ mong-json-tree {
 
 /* ---------- Explore ---------- */
 
+/* ---------- Analytics ---------- */
+
+.facet-field {
+  max-width: 100%;
+}
+
+.facet-field + .hint {
+  align-self: end;
+  padding-bottom: 6px;
+}
+
+.facet-raw > summary {
+  cursor: pointer;
+  font-weight: 550;
+}
+
+.facet-raw > mong-json-tree {
+  display: block;
+  margin-top: var(--space-3);
+  max-height: 30rem;
+  overflow: auto;
+}
+
+table.table.compact.facet-table {
+  width: 100%;
+  min-width: 0;
+}
+
+.facet-table tbody th {
+  position: static;
+  font-weight: 500;
+  text-align: left;
+}
+
+.facet-table tbody th,
+.facet-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.facet-bars,
+.facet-columns__marks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.facet-bars {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(48px, 3fr) max-content;
+  gap: var(--space-2);
+}
+
+.facet-bars .facet-mark {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.facet-mark__label,
+.facet-mark__value {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.facet-mark__value {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.facet-mark__track {
+  position: relative;
+  display: block;
+}
+
+.facet-mark__fill {
+  position: absolute;
+  display: block;
+  background: var(--chart-1);
+  border-radius: 3px;
+}
+
+.facet-mark[data-outside] .facet-mark__fill {
+  background: var(--chart-8);
+}
+
+.facet-bars .facet-mark__track {
+  height: 12px;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+.facet-bars .facet-mark__track::before {
+  content: "";
+  position: absolute;
+  inset: -2px auto -2px var(--bar-baseline);
+  width: 1px;
+  background: var(--line-strong);
+}
+
+.facet-bars .facet-mark__fill {
+  inset: 0 auto 0 var(--bar-start);
+  width: var(--bar-size);
+}
+
+.facet-columns-scroll {
+  overflow-x: auto;
+  padding: var(--space-2) 0;
+}
+
+.facet-columns {
+  --plot-height: 144px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.facet-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  height: var(--plot-height);
+}
+
+.facet-columns__marks {
+  display: grid;
+  grid-template-columns: repeat(var(--bucket-count), minmax(82px, 1fr));
+  column-gap: 2px;
+  width: max(100%, calc(var(--bucket-count) * 84px));
+}
+
+.facet-columns .facet-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  min-width: 0;
+}
+
+.facet-columns .facet-mark__track {
+  order: -1;
+  height: var(--plot-height);
+  width: 100%;
+  background: linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 50%;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.facet-columns .facet-mark__track::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 var(--bar-baseline);
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.facet-columns .facet-mark__fill {
+  inset: auto 22% var(--bar-start);
+  height: var(--bar-size);
+}
+
+.facet-columns .facet-mark__label {
+  margin: var(--space-2) var(--space-1) var(--space-1);
+  line-height: 1.25;
+}
+
+.facet-columns .facet-mark__value {
+  font-weight: 550;
+}
+
+/* ---------- Explore ---------- */
+
+.explore-mode-tabs .tabs {
+  border-bottom: 0;
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.explore-mode-tabs .tabs button:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .explore {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);

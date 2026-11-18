@@ -3,7 +3,9 @@ import { LightElement } from "../components/base";
 import type { Column } from "../components/data-table";
 import { confirmDialog, openDialog } from "../components/dialog";
 import "../components/explain-tree";
+import "../components/facet-results";
 import { originBadge } from "../components/index-origin";
+import "../components/tabs";
 import { icon } from "../components/icons";
 import { toast } from "../components/toast";
 import { FieldIndex, loadMappings } from "../editors/fields.js";
@@ -14,6 +16,7 @@ import { capabilities, type Capabilities } from "../lib/capabilities";
 import { originLabel } from "../lib/origin";
 import { download, toCsv, toNdjson } from "../lib/csv";
 import { columnsFor, displayValue, getPath, prettyJson, sortValue } from "../lib/ejson";
+import { addFacetToQuery, asDocument, facetFields, FACET_TEMPLATES, facetValue, matchCount, readFacets, type FacetResult } from "../lib/facets";
 import { formatMs, formatNumber, pluralize, relativeTime } from "../lib/format";
 import { normalizeHits, type Hit } from "../lib/hits";
 import { navigate } from "../lib/router";
@@ -26,7 +29,8 @@ import { decodeQuery, encodeQuery } from "../lib/urlstate";
 import "./explore-drawers";
 import type { SimilarTarget } from "./explore-drawers";
 
-type Mode = "browse" | "search" | "vector";
+const MODES = ["browse", "search", "aggregate", "vector"] as const;
+type Mode = (typeof MODES)[number];
 type ResultView = "table" | "tree" | "raw";
 
 interface QueryEditor extends HTMLElement {
@@ -95,7 +99,7 @@ const EXPLAIN_OPTIONS = [
   { id: "execution_stats", label: "Explain: timings" },
   { id: "all_plans_execution", label: "Explain: all plans" },
 ];
-const MODE_LABELS: Record<Mode, string> = { browse: "Browse", search: "Search", vector: "Vector" };
+const MODE_LABELS: Record<Mode, string> = { browse: "Browse", search: "Search", aggregate: "Aggregate", vector: "Vector" };
 
 /** A query handed to the next Explore instance (Find similar from an embedded view). */
 let handoff: { index: string; mode: Mode; text: string } | null = null;
@@ -204,6 +208,7 @@ export class MongExplore extends LightElement {
   private fieldsKey = "";
   private pendingRun = false;
   private pendingField: string | null = null;
+  private aggregateResult: { facets: FacetResult[]; text: string } | null = null;
   private controller: AbortController | null = null;
   private drafts: Record<string, string> = load(DRAFTS_KEY, {});
   private draftTimer = 0;
@@ -258,7 +263,7 @@ export class MongExplore extends LightElement {
     super.disconnectedCallback();
     document.removeEventListener("click", this.onDocClick);
     window.removeEventListener("storage", this.onStorage);
-    this.controller?.abort();
+    this.cancel();
     this.releaseCursor();
     this.flushDraft();
   }
@@ -289,7 +294,7 @@ export class MongExplore extends LightElement {
   }
 
   private modeAllowed(mode: Mode, caps = this.caps): boolean {
-    return mode === "browse" ? caps.browse : mode === "search" ? caps.search : caps.vector;
+    return mode === "browse" ? caps.browse : mode === "vector" ? caps.vector : caps.search;
   }
 
   private snippetContext(): SnippetContext {
@@ -306,6 +311,7 @@ export class MongExplore extends LightElement {
 
   private defaultText(mode: Mode): string {
     if (mode === "browse") return "";
+    if (mode === "aggregate") return prettyJson({ facet: { facets: {} } });
     const snippet = mode === "vector" ? VECTOR_SNIPPETS[0] : SEARCH_SNIPPETS[0];
     return queryText(snippet.build(this.snippetContext()));
   }
@@ -340,15 +346,22 @@ export class MongExplore extends LightElement {
   /** Switch index and/or mode, keeping a draft per (index, mode). */
   private select(indexName: string, mode?: Mode, text?: string): void {
     this.flushDraft();
+    this.pendingRun = false;
+    this.pendingField = null;
+    this.menu = null;
     const index = this.indexes.find((item) => item.name === indexName);
     const caps = capabilities(index);
     const indexChanged = indexName !== this.indexName;
-    let next = mode ?? (indexChanged ? this.defaultMode(caps) : this.mode);
+    let next = mode ?? (indexChanged && this.mode !== "aggregate" ? this.defaultMode(caps) : this.mode);
     if (index && !this.modeAllowed(next, caps)) next = this.defaultMode(caps);
-    if (indexChanged) {
-      this.abortRun();
+    const aggregateChanged = this.mode !== next && (this.mode === "aggregate" || next === "aggregate");
+    if (indexChanged || aggregateChanged) {
+      this.cancel();
       this.releaseCursor();
       this.clearResults();
+      this.drawer = null;
+    }
+    if (indexChanged) {
       this.fields = [];
       this.fieldsKey = "";
     }
@@ -377,7 +390,7 @@ export class MongExplore extends LightElement {
     const indexes = this.indexes;
     if (!this.indexName && indexes.length) {
       const preferred = this.prefs.index && indexes.some((i) => i.name === this.prefs.index) ? this.prefs.index : indexes[0].name;
-      this.select(preferred);
+      this.select(preferred, MODES.find((mode) => mode === this.params.get("mode")));
       this.pendingRun = this.mode === "browse";
     }
     const index = this.index;
@@ -385,7 +398,7 @@ export class MongExplore extends LightElement {
       const key = `${index.index_id}:${index.generation_id ?? ""}:${index.desired_revision ?? ""}`;
       if (key !== this.fieldsKey) {
         this.fieldsKey = key;
-        void this.loadFields(index);
+        void this.loadFields(index, key);
       }
       if (!this.modeAllowed(this.mode)) this.select(this.indexName, this.defaultMode(this.caps));
     }
@@ -407,12 +420,14 @@ export class MongExplore extends LightElement {
       return;
     }
     const name = this.params.get("index") ?? "";
-    const mode = this.params.get("mode") as Mode | null;
+    const mode = MODES.find((candidate) => candidate === this.params.get("mode"));
     const encoded = this.params.get("q");
     const field = this.params.get("field");
     let text: string | undefined;
     if (encoded) {
+      const params = this.params.toString();
       const decoded = await decodeQuery(encoded);
+      if (!this.isConnected || this.params.toString() !== params) return;
       if (decoded == null) toast("The query in this link could not be read.", "warn");
       else text = decoded;
     }
@@ -435,17 +450,18 @@ export class MongExplore extends LightElement {
     this.text = queryText(fieldQuery(path, entry?.types ?? []));
   }
 
-  private async loadFields(index: SummaryIndex): Promise<void> {
+  private async loadFields(index: SummaryIndex, key: string): Promise<void> {
     try {
       const compiled = FieldIndex.compile(index.definition, index.type);
       if (index.type !== "VECTOR_SEARCH") {
         const observed = await loadMappings(index);
         if (observed) compiled.applyObserved(observed);
       }
-      if (index.name !== this.indexName) return;
+      if (this.fieldsKey !== key) return;
       const suggested = compiled.suggest(null) as Array<{ path: string; rawTypes: Set<string>; origin: string }>;
       this.fields = suggested.map((field) => ({ path: field.path, types: [...field.rawTypes], origin: field.origin }));
     } catch {
+      if (this.fieldsKey !== key) return;
       this.fields = [];
     }
     if (this.pendingField) this.applyField();
@@ -466,6 +482,7 @@ export class MongExplore extends LightElement {
     this.error = null;
     this.selected = new Set();
     this.ranQuery = null;
+    this.aggregateResult = null;
     this.openHit = null;
   }
 
@@ -492,17 +509,24 @@ export class MongExplore extends LightElement {
     }
     const editor = this.editor;
     const query = editor ? editor.getQuery() : (JSON.parse(this.text || "{}") as Record<string, unknown>);
+    if (this.mode === "aggregate") {
+      const facets = asDocument(asDocument(query.facet)?.facets);
+      if (facets && Object.keys(facets).length === 0) throw new Error("Add a facet before running this query.");
+    }
     if (this.mode === "search") {
       // mongod looks up full documents itself, which stored source may only cover in part.
       if (!caps.readOnly && caps.storedSource !== "none" && query.returnStoredSource === undefined) query.returnStoredSource = true;
-      if (this.prefs.count && query.count === undefined) query.count = { type: "lowerBound" };
+    }
+    if ((this.mode === "search" || this.mode === "aggregate") && this.prefs.count && query.count === undefined) {
+      query.count = { type: "lowerBound" };
     }
     return query;
   }
 
   async runMeta(): Promise<void> {
     const index = this.index;
-    if (!index || this.running || this.mode !== "search") return;
+    const mode = this.mode;
+    if (!index || this.running || (mode !== "search" && mode !== "aggregate")) return;
     let query: Record<string, unknown>;
     try {
       query = this.buildQuery();
@@ -511,7 +535,7 @@ export class MongExplore extends LightElement {
       return;
     }
     this.flushDraft();
-    this.abortRun();
+    this.cancel();
     this.releaseCursor();
     const controller = new AbortController();
     this.controller = controller;
@@ -525,6 +549,7 @@ export class MongExplore extends LightElement {
         { query, explain: this.prefs.explain || undefined },
         controller.signal,
       );
+      if (this.controller !== controller) return;
       const e2e = performance.now() - started;
       this.hits = [];
       this.metadata = page.metadata;
@@ -535,13 +560,17 @@ export class MongExplore extends LightElement {
       this.pageNo = 1;
       this.timings = [{ page: 1, hits: 0, e2e, mongot: page.latency_ms ?? null }];
       this.selected = new Set();
-      this.ranQuery = { index, mode: "search", query };
-      this.remember({ index: index.name, mode: "search", query: text, hits: 0, ms: page.latency_ms ?? e2e, ok: true });
+      this.ranQuery = { index, mode, query };
+      if (mode === "aggregate") {
+        this.aggregateResult = { facets: readFacets(page.metadata, query), text };
+        void this.syncUrl(index.name, mode, text);
+      }
+      this.remember({ index: index.name, mode, query: text, hits: 0, ms: page.latency_ms ?? e2e, ok: true });
     } catch (error) {
-      if ((error as Error)?.name === "AbortError") return;
+      if (this.controller !== controller || (error as Error)?.name === "AbortError") return;
       this.clearResults();
       this.error = errorMessage(error);
-      this.remember({ index: index.name, mode: "search", query: text, hits: 0, ms: null, ok: false });
+      this.remember({ index: index.name, mode, query: text, hits: 0, ms: null, ok: false });
     } finally {
       if (this.controller === controller) {
         this.controller = null;
@@ -551,6 +580,7 @@ export class MongExplore extends LightElement {
   }
 
   async run(): Promise<void> {
+    if (this.mode === "aggregate") return this.runMeta();
     const index = this.index;
     if (!index || this.running) return;
     let query: Record<string, unknown>;
@@ -561,7 +591,7 @@ export class MongExplore extends LightElement {
       return;
     }
     this.flushDraft();
-    this.abortRun();
+    this.cancel();
     this.releaseCursor();
     const controller = new AbortController();
     this.controller = controller;
@@ -583,6 +613,10 @@ export class MongExplore extends LightElement {
           },
           controller.signal,
         );
+      if (this.controller !== controller) {
+        if (page.cursor_id && page.has_more) api.killCursor(page.cursor_id).catch(() => undefined);
+        return;
+      }
       const e2e = performance.now() - started;
       this.hits = normalizeHits(page.results);
       this.metadata = page.metadata;
@@ -597,7 +631,7 @@ export class MongExplore extends LightElement {
       this.remember({ index: index.name, mode, query: text, hits: this.hits.length, ms: page.latency_ms ?? e2e, ok: true });
       void this.syncUrl(index.name, mode, text);
     } catch (error) {
-      if ((error as Error)?.name === "AbortError") return;
+      if (this.controller !== controller || (error as Error)?.name === "AbortError") return;
       this.clearResults();
       this.error = errorMessage(error);
       this.remember({ index: index.name, mode, query: text, hits: 0, ms: null, ok: false });
@@ -624,6 +658,7 @@ export class MongExplore extends LightElement {
     const started = performance.now();
     try {
       const page = await api.more(this.cursorId, index.index_id, this.prefs.batchSize, this.pageNo + 1, controller.signal);
+      if (this.controller !== controller) return;
       const e2e = performance.now() - started;
       this.hits = [...this.hits, ...normalizeHits(page.results, this.hits.length)];
       this.cursorId = page.cursor_id ?? this.cursorId;
@@ -638,19 +673,23 @@ export class MongExplore extends LightElement {
         toast(`Stopped at ${formatNumber(MAX_ROWS)} rows. Use Export → All matches for more.`, "warn");
       }
     } catch (error) {
-      if ((error as Error)?.name !== "AbortError") {
+      if (this.controller === controller && (error as Error)?.name !== "AbortError") {
         toast(errorMessage(error), "error");
         this.hasMore = false;
       }
     } finally {
-      if (this.controller === controller) this.controller = null;
-      this.loadingMore = false;
+      if (this.controller === controller) {
+        this.controller = null;
+        this.loadingMore = false;
+      }
     }
   }
 
   private async syncUrl(index: string, mode: Mode, text: string): Promise<void> {
     if (this.embedded) return;
+    const ranQuery = this.ranQuery;
     const encoded = mode === "browse" ? ({ ok: true, value: "" } as const) : await encodeQuery(text);
+    if (!this.isConnected || this.indexName !== index || this.mode !== mode || this.ranQuery !== ranQuery) return;
     this.urlNote = encoded.ok ? null : encoded.reason;
     const params = { index, mode, q: encoded.ok ? encoded.value : "" };
     const search = new URLSearchParams();
@@ -998,24 +1037,22 @@ export class MongExplore extends LightElement {
 
   private renderEditorCard(caps: Capabilities): TemplateResult {
     const snippets = this.mode === "vector" ? VECTOR_SNIPPETS : SEARCH_SNIPPETS;
-    const modes: Mode[] = ["browse", "search", "vector"];
+    const aggregate = this.mode === "aggregate";
+    const tabs = MODES.map((mode) => {
+      const disabled = !this.modeAllowed(mode, caps);
+      return {
+        id: mode,
+        label: MODE_LABELS[mode],
+        disabled,
+        title: disabled ? (mode === "aggregate" ? "Aggregate requires a search index." : caps.reasons[mode]) : undefined,
+      };
+    });
     return html`<div class="card">
       <div class="card__head" style="flex-wrap:wrap;gap:8px">
-        <div class="seg" role="group" aria-label="Query mode">
-          ${modes.map((mode) => {
-            const allowed = this.modeAllowed(mode, caps);
-            return html`<button
-              aria-pressed=${this.mode === mode ? "true" : "false"}
-              ?disabled=${!allowed}
-              title=${allowed ? "" : (caps.reasons[mode] ?? "")}
-              @click=${() => this.select(this.indexName, mode)}
-            >
-              ${MODE_LABELS[mode]}
-            </button>`;
-          })}
-        </div>
+        <mong-tabs class="explore-mode-tabs" label="Query mode" .tabs=${tabs} .active=${this.mode}
+          @tab-change=${(event: CustomEvent<Mode>) => this.select(this.indexName, event.detail)}></mong-tabs>
         <span class="spacer"></span>
-        ${this.mode !== "browse"
+        ${this.mode === "search" || this.mode === "vector"
           ? html`<span style="position:relative" data-menu>
                 <button class="btn ghost sm" aria-haspopup="menu" aria-expanded=${this.menu === "snippets"} @click=${(e: Event) => this.toggleMenu("snippets", e)}>
                   ${icon("code", 14)} Snippets ${icon("chevronDown", 12)}
@@ -1029,12 +1066,15 @@ export class MongExplore extends LightElement {
                       )}
                     </div>`
                   : nothing}
-              </span>
-              <button class="btn ghost sm" title="Indent (Alt+Shift+F)" @click=${() => this.editor?.indent()}>${icon("format", 14)} Format</button>`
+              </span>`
+          : nothing}
+        ${this.mode !== "browse"
+          ? html`<button class="btn ghost sm" title="Indent (Alt+Shift+F)" @click=${() => this.editor?.indent()}>${icon("format", 14)} Format</button>`
           : nothing}
         <button class="btn ghost sm" title="Save this query" ?disabled=${!this.index} @click=${() => this.saveQuery()}>${icon("star", 14)} Save</button>
       </div>
       <div class="card__body stack">
+        ${aggregate ? this.renderFacetPicker() : nothing}
         ${this.mode === "browse"
           ? html`<p class="hint" style="margin:0">
               Every document in ${this.indexName || "the index"}, in index order, with stored source. Switch to Search to filter.
@@ -1052,12 +1092,12 @@ export class MongExplore extends LightElement {
               }}
             ></mong-query-editor>`}
         <div class="row" style="flex-wrap:wrap;gap:12px">
-          <label class="row small">
+          ${aggregate ? nothing : html`<label class="row small">
             Batch
             <select .value=${String(this.prefs.batchSize)} @change=${(e: Event) => this.setPref("batchSize", Number((e.target as HTMLSelectElement).value))}>
               ${BATCH_SIZES.map((size) => html`<option value=${size} ?selected=${size === this.prefs.batchSize}>${size}</option>`)}
             </select>
-          </label>
+          </label>`}
           <label class="row small" title=${this.mode === "vector" ? "Vector queries do not count matches" : "Adds count: {type: \"lowerBound\"}. Exact totals can be slow on large indexes."}>
             <input type="checkbox" .checked=${this.prefs.count} ?disabled=${this.mode === "vector"} @change=${(e: Event) => this.setPref("count", (e.target as HTMLInputElement).checked)} />
             Count matches
@@ -1080,6 +1120,71 @@ export class MongExplore extends LightElement {
         </div>
       </div>
     </div>`;
+  }
+
+  private renderFacetPicker(): TemplateResult {
+    const indexed = facetFields(this.fields);
+    const options = [...indexed, ...FACET_TEMPLATES];
+    return html`<div class="row">
+      <label class="field facet-field"><span class="label">Add facet</span>
+        <select class="facet-field-select" ?disabled=${!this.index} @change=${(event: Event) => {
+          const select = event.target as HTMLSelectElement;
+          const field = options[Number(select.value)];
+          select.selectedIndex = 0;
+          if (!field) return;
+          try {
+            this.text = prettyJson(addFacetToQuery(this.text, field));
+            this.error = null;
+            this.saveDraft();
+            this.editor?.focus();
+          } catch (error) {
+            this.error = errorMessage(error);
+          }
+        }}>
+          <option value="" disabled selected>Choose a field or template</option>
+          ${indexed.length ? html`<optgroup label="Indexed fields">
+            ${indexed.map(({ path, type }, index) => html`<option value=${index}>${path} · ${type}</option>`)}
+          </optgroup>` : nothing}
+          <optgroup label="Templates">
+            ${FACET_TEMPLATES.map(({ label }, index) => html`<option value=${indexed.length + index}>${label} facet</option>`)}
+          </optgroup>
+        </select>
+      </label>
+      <p class="hint">Set <code>boundaries</code> for ranges. Add <code>facet.operator</code> to filter matches.</p>
+    </div>`;
+  }
+
+  private renderAggregateResults(): TemplateResult {
+    if (this.error) {
+      return html`<div class="alert" data-tone="danger" role="alert">
+        ${icon("alert", 16)}<div class="alert__body">${this.error}</div>
+      </div>`;
+    }
+    const result = this.aggregateResult;
+    if (!result) return html`<div class="card">
+      <mong-empty glyph="analytics" heading=${this.running ? "Running…" : "Facet results"}
+        .message=${this.running ? null : "Run a query to see the bucket breakdown."}></mong-empty>
+    </div>`;
+    const count = matchCount(this.metadata);
+    const latency = this.timings[0]?.mongot;
+    return html`
+      <div class="results-meta" role="status">
+        ${count ? html`<span><strong>${count.exact ? "" : "≥"}${facetValue(count.value)}</strong> matches</span>` : nothing}
+        ${latency == null ? nothing : html`<span>${formatMs(latency)} server time</span>`}
+        ${this.running
+          ? html`<span>Running query…</span>`
+          : result.text !== this.text ? html`<span>Query edited. Run again to refresh.</span>` : nothing}
+      </div>
+      ${result.facets.length
+        ? html`<mong-facet-results .facets=${result.facets}></mong-facet-results>`
+        : html`<p class="card card__body muted">${this.metadata ? "This query returned no facets." : "This query returned no metadata."}</p>`}
+      ${this.metadata
+        ? html`<details class="card card__body facet-raw">
+            <summary>Raw metadata</summary>
+            <mong-json-tree .value=${this.metadata} expand-depth="1"></mong-json-tree>
+          </details>`
+        : nothing}
+    `;
   }
 
   private renderStats(): TemplateResult | typeof nothing {
@@ -1369,23 +1474,25 @@ export class MongExplore extends LightElement {
       <div class="stack" style="min-width:0">
         ${this.index ? nothing : html`<div class="alert" data-tone="warn">${icon("alert", 16)}<div class="alert__body">Index “${this.indexName}” was not found.</div></div>`}
         ${this.renderEditorCard(caps)}
-        <div class="card">
-          ${this.renderResultsHead()}
-          ${this.renderStats()}
-          ${this.renderResultsBody()}
-          ${this.renderResultsFoot()}
-        </div>
-        ${this.renderSearchMeta()}
+        ${this.mode === "aggregate"
+          ? this.renderAggregateResults()
+          : html`<div class="card">
+              ${this.renderResultsHead()}
+              ${this.renderStats()}
+              ${this.renderResultsBody()}
+              ${this.renderResultsFoot()}
+            </div>
+            ${this.renderSearchMeta()}`}
         ${this.renderExplain()}
       </div>
     </div>
-    ${this.renderDrawers()}`;
+    ${this.mode === "aggregate" ? nothing : this.renderDrawers()}`;
     if (this.embedded) return body;
     return html`<div class="page">
       <div class="page__head">
         <div class="page__title">
           <h1>Explore</h1>
-          <div class="hint">Browse, search, and vector-query documents. Ctrl+Enter runs the query.</div>
+          <div class="hint">Ctrl+Enter runs the query.</div>
         </div>
       </div>
       ${body}
