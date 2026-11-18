@@ -1988,6 +1988,147 @@ table.table.compact {
   background: var(--accent-soft);
 }
 
+.explain-graph-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.explain-graph-breadcrumb strong { color: var(--ink); }
+
+/* Leave enough room to drag the grip down when Explain is the last card. */
+.explain-card { margin-bottom: 14dvh; }
+.explain-pane { overflow: auto; }
+
+.explain-pane > mong-explain-graph {
+  display: block;
+  height: 100%;
+}
+
+.explain-pane .explain-graph { height: 100%; }
+.explain-pane .explain-graph-viewport {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+
+.explain-graph-viewport {
+  overflow: auto;
+  background: var(--surface-2);
+  background-image: radial-gradient(var(--line-strong) 1px, transparent 1px);
+  background-size: 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.explain-graph-columns {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  min-height: clamp(12rem, 28dvh, 18rem);
+  padding: var(--space-4);
+}
+
+.explain-graph-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--explain-node-gap);
+}
+
+.explain-graph-edges {
+  flex: none;
+  stroke: var(--muted);
+  stroke-width: 1.25px;
+  fill: none;
+  overflow: visible;
+}
+
+.explain-graph-node {
+  --phase-color: var(--accent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 1fr 1fr;
+  align-items: center;
+  column-gap: 6px;
+  width: 178px;
+  height: var(--explain-node-height);
+  padding: 5px 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--phase-color);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-align: start;
+  cursor: pointer;
+}
+
+.explain-graph-node[data-kind="planning"] { --phase-color: var(--chart-2); }
+.explain-graph-node[data-kind="output"] { --phase-color: var(--chart-4); }
+.explain-graph-node[data-kind="details"] { --phase-color: var(--muted); }
+.explain-graph-node:hover { border-color: var(--phase-color); }
+.explain-graph-node[aria-pressed="true"] {
+  border-color: var(--phase-color);
+  background: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--phase-color);
+}
+
+.explain-graph-node .explain-graph-node-title {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.explain-graph-node-title,
+.explain-graph-node-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explain-graph-node-summary { grid-column: 1; grid-row: 2; font-size: 0.69rem; color: var(--muted); }
+.explain-graph-time { grid-column: 2; grid-row: 2; font-size: 0.71rem; font-family: var(--font-mono); white-space: nowrap; }
+.explain-graph-node-open { grid-column: 2; grid-row: 1; justify-self: end; display: flex; color: var(--muted); }
+.explain-graph-node:has(.explain-graph-node-open) .explain-graph-node-title { grid-column: 1; }
+
+.explain-graph-details .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-strong); }
+
+.explain-graph-inspector {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.explain-graph-detail-summary { overflow-wrap: anywhere; }
+
+.explain-graph-timings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.explain-graph-timings li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 0.75rem;
+}
+
+.explain-graph-timings strong { font-family: var(--font-mono); }
+.explain-graph-data { max-height: 60dvh; overflow: auto; }
+.explain-graph-data pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.75rem; }
+
 .explain-node {
   padding-left: 14px;
   border-left: 1px solid var(--line);

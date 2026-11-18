@@ -25,6 +25,10 @@ function writeStored(key, value) {
  *
  * Drag or Arrow Up/Down resizes, double-click fits `fitHeight()`. With `storageKey`,
  * the last height is restored on the next mount.
+ * @param {HTMLElement} target
+ * @param {{height: number, minHeight: number, maxHeight?: () => number,
+ *   fitHeight?: (() => number) | null, storageKey?: string,
+ *   onResize?: ((height: number) => void) | null, label?: string}} options
  */
 export function addResizeGrip(target, {
   height,
@@ -33,6 +37,7 @@ export function addResizeGrip(target, {
   fitHeight = null,
   storageKey = "",
   onResize = null,
+  label = "Resize editor",
 }) {
   const clamp = (value) => Math.round(Math.min(Math.max(value, minHeight), Math.max(minHeight, maxHeight())));
   let current = clamp(readStored(storageKey) ?? height);
@@ -51,7 +56,7 @@ export function addResizeGrip(target, {
   grip.title = "Drag to resize. Double-click to fit the content.";
   grip.setAttribute("role", "separator");
   grip.setAttribute("aria-orientation", "horizontal");
-  grip.setAttribute("aria-label", "Resize editor");
+  grip.setAttribute("aria-label", label);
   grip.setAttribute("aria-valuemin", String(minHeight));
 
   grip.addEventListener("pointerdown", (event) => {
