@@ -363,7 +363,7 @@ export class MongIndexCreate extends LightElement {
   private stepTwo(): TemplateResult {
     const problem = this.name ? this.nameProblem() : null;
     const errors = this.diagnostics.filter((item) => item.severity === "error");
-    return html`<form class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start" @submit=${(e: Event) => this.review(e)}>
+    return html`<form class="grid wizard-form" @submit=${(e: Event) => this.review(e)}>
       <section class="card">
         <div class="card__head">
           <h2>Name and definition</h2>

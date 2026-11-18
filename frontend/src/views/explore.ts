@@ -172,6 +172,7 @@ export class MongExplore extends LightElement {
     urlNote: { state: true },
     history: { state: true },
     saved: { state: true },
+    railOpen: { state: true },
     columnPrefs: { state: true },
   };
   declare params: URLSearchParams;
@@ -201,6 +202,7 @@ export class MongExplore extends LightElement {
   declare urlNote: string | null;
   declare history: HistoryEntry[];
   declare saved: SavedQuery[];
+  declare railOpen: boolean;
   declare columnPrefs: Record<string, { pinned: string[]; hidden: string[] }>;
 
   private readonly store = new StoreController(this, appStore);
@@ -250,6 +252,7 @@ export class MongExplore extends LightElement {
     this.urlNote = null;
     this.history = load<HistoryEntry[]>(HISTORY_KEY, []);
     this.saved = load<SavedQuery[]>(SAVED_KEY, []);
+    this.railOpen = false;
     this.columnPrefs = load(COLUMNS_KEY, {});
   }
 
@@ -970,65 +973,70 @@ export class MongExplore extends LightElement {
                 : nothing}
             </div>
           </div>`}
-      <div class="card">
-        <div class="card__head"><h3>Fields</h3><span class="hint">${this.fields.length}</span></div>
-        ${this.fields.some((field) => field.origin === "sampled")
-          ? html`<p class="hint">Dynamic field suggestions come from a document sample and may be incomplete.</p>`
-          : nothing}
-        <div class="card__body stack" style="gap:6px">
-          ${this.fields.length > 8
-            ? html`<input type="search" placeholder="Filter fields" .value=${this.fieldFilter} @input=${(e: Event) => (this.fieldFilter = (e.target as HTMLInputElement).value)} />`
+      <button class="btn secondary rail__toggle" aria-expanded=${this.railOpen} @click=${() => (this.railOpen = !this.railOpen)}>
+        ${icon("chevronDown", 14)} Fields, saved queries &amp; history
+      </button>
+      <div class="rail__tools">
+        <div class="card">
+          <div class="card__head"><h3>Fields</h3><span class="hint">${this.fields.length}</span></div>
+          ${this.fields.some((field) => field.origin === "sampled")
+            ? html`<p class="hint">Dynamic field suggestions come from a document sample and may be incomplete.</p>`
             : nothing}
-          <div class="list" style="max-height:280px;overflow:auto">
-            ${fields.length
-              ? fields.map(
-                  (field) => html`<button title="Insert ${field.path} into the query (${field.origin})" @click=${() => this.insertField(field)}>
-                    <span class="grow mono small">${field.path}</span>
-                    <span class="muted small">${field.types.join(", ")}</span>
-                  </button>`,
-                )
-              : html`<span class="hint">${this.index ? "No indexed fields yet." : "Pick an index."}</span>`}
+          <div class="card__body stack" style="gap:6px">
+            ${this.fields.length > 8
+              ? html`<input type="search" placeholder="Filter fields" .value=${this.fieldFilter} @input=${(e: Event) => (this.fieldFilter = (e.target as HTMLInputElement).value)} />`
+              : nothing}
+            <div class="list" style="max-height:280px;overflow:auto">
+              ${fields.length
+                ? fields.map(
+                    (field) => html`<button title="Insert ${field.path} into the query (${field.origin})" @click=${() => this.insertField(field)}>
+                      <span class="grow mono small">${field.path}</span>
+                      <span class="muted small">${field.types.join(", ")}</span>
+                    </button>`,
+                  )
+                : html`<span class="hint">${this.index ? "No indexed fields yet." : "Pick an index."}</span>`}
+            </div>
           </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card__head"><h3>Saved</h3></div>
-        <div class="card__body">
-          <div class="list">
-            ${saved.length
-              ? saved.map(
-                  (item) => html`<button title=${oneLine(item.query, 300)} @click=${() => this.restore(item)}>
-                    ${icon("star", 12)}
-                    <span class="grow">${item.name}</span>
-                    ${this.embedded ? nothing : html`<span class="muted small">${item.index}</span>`}
-                    <span
-                      class="muted"
-                      role="button"
-                      aria-label="Remove saved query"
-                      @click=${(e: Event) => {
-                        e.stopPropagation();
-                        this.removeSaved(item.id);
-                      }}
-                    >${icon("x", 12)}</span>
-                  </button>`,
-                )
-              : html`<span class="hint">Save a query with the star button.</span>`}
+        <div class="card">
+          <div class="card__head"><h3>Saved</h3></div>
+          <div class="card__body">
+            <div class="list">
+              ${saved.length
+                ? saved.map(
+                    (item) => html`<button title=${oneLine(item.query, 300)} @click=${() => this.restore(item)}>
+                      ${icon("star", 12)}
+                      <span class="grow">${item.name}</span>
+                      ${this.embedded ? nothing : html`<span class="muted small">${item.index}</span>`}
+                      <span
+                        class="muted"
+                        role="button"
+                        aria-label="Remove saved query"
+                        @click=${(e: Event) => {
+                          e.stopPropagation();
+                          this.removeSaved(item.id);
+                        }}
+                      >${icon("x", 12)}</span>
+                    </button>`,
+                  )
+                : html`<span class="hint">Save a query with the star button.</span>`}
+            </div>
           </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card__head"><h3>History</h3></div>
-        <div class="card__body">
-          <div class="list">
-            ${history.length
-              ? history.map(
-                  (item) => html`<button title="${item.index} · ${MODE_LABELS[item.mode]}\n${oneLine(item.query, 400)}" @click=${() => this.restore(item)}>
-                    <span class="dot" data-tone=${item.ok ? "ok" : "danger"}></span>
-                    <span class="grow mono small">${item.mode === "browse" ? "Browse" : oneLine(item.query, 60)}</span>
-                    <span class="muted small">${relativeTime(item.t)}</span>
-                  </button>`,
-                )
-              : html`<span class="hint">Queries you run appear here.</span>`}
+        <div class="card">
+          <div class="card__head"><h3>History</h3></div>
+          <div class="card__body">
+            <div class="list">
+              ${history.length
+                ? history.map(
+                    (item) => html`<button title="${item.index} · ${MODE_LABELS[item.mode]}\n${oneLine(item.query, 400)}" @click=${() => this.restore(item)}>
+                      <span class="dot" data-tone=${item.ok ? "ok" : "danger"}></span>
+                      <span class="grow mono small">${item.mode === "browse" ? "Browse" : oneLine(item.query, 60)}</span>
+                      <span class="muted small">${relativeTime(item.t)}</span>
+                    </button>`,
+                  )
+                : html`<span class="hint">Queries you run appear here.</span>`}
+            </div>
           </div>
         </div>
       </div>
@@ -1048,17 +1056,17 @@ export class MongExplore extends LightElement {
       };
     });
     return html`<div class="card">
-      <div class="card__head" style="flex-wrap:wrap;gap:8px">
+      <div class="card__head query-toolbar">
         <mong-tabs class="explore-mode-tabs" label="Query mode" .tabs=${tabs} .active=${this.mode}
           @tab-change=${(event: CustomEvent<Mode>) => this.select(this.indexName, event.detail)}></mong-tabs>
         <span class="spacer"></span>
         ${this.mode === "search" || this.mode === "vector"
-          ? html`<span style="position:relative" data-menu>
+          ? html`<span data-menu>
                 <button class="btn ghost sm" aria-haspopup="menu" aria-expanded=${this.menu === "snippets"} @click=${(e: Event) => this.toggleMenu("snippets", e)}>
                   ${icon("code", 14)} Snippets ${icon("chevronDown", 12)}
                 </button>
                 ${this.menu === "snippets"
-                  ? html`<div class="popover menu" role="menu" style="right:0;top:32px;width:300px">
+                  ? html`<div class="popover menu query-menu query-menu--snippets" role="menu">
                       ${snippets.map(
                         (snippet) => html`<button role="menuitem" @click=${() => this.applySnippet(snippet)} style="flex-direction:column;align-items:flex-start;gap:2px">
                           <strong>${snippet.label}</strong><span class="muted small">${snippet.description}</span>
@@ -1115,7 +1123,7 @@ export class MongExplore extends LightElement {
               </button>`
             : nothing}
           <button class="btn" ?disabled=${!this.index || this.running} @click=${() => this.run()}>
-            ${icon("play", 14)} ${this.running ? "Running…" : "Run"} <span class="kbd">Ctrl ↵</span>
+            ${icon("play", 14)} ${this.running ? "Running…" : "Run"} <span class="kbd run-shortcut">Ctrl ↵</span>
           </button>
         </div>
       </div>
@@ -1236,7 +1244,7 @@ export class MongExplore extends LightElement {
               This query returned no metadata. Add <code>count</code> or a <code>facet</code> collector, or run Meta for a metadata-only query.
             </p>`}
         ${this.timings.length > 1
-          ? html`<table class="table compact">
+          ? html`<div class="table-wrap"><table class="table compact">
               <thead><tr><th>Page</th><th class="num">Hits</th><th class="num">End to end</th><th class="num">Mongot</th></tr></thead>
               <tbody>
                 ${this.timings.map(
@@ -1248,7 +1256,7 @@ export class MongExplore extends LightElement {
                   </tr>`,
                 )}
               </tbody>
-            </table>`
+            </table></div>`
           : nothing}
       </div>
     </div>`;
@@ -1257,7 +1265,7 @@ export class MongExplore extends LightElement {
   private renderResultsHead(): TemplateResult {
     const view = this.prefs.view;
     const canWrite = Boolean(this.index) && !this.caps.readOnly;
-    return html`<div class="card__head" style="flex-wrap:wrap;gap:8px">
+    return html`<div class="card__head query-toolbar">
       <div class="results-meta">
         <h3>Results</h3>
         ${this.ranQuery && this.ranQuery.index.name !== this.indexName ? html`<span>from ${this.ranQuery.index.name}</span>` : nothing}
@@ -1271,15 +1279,15 @@ export class MongExplore extends LightElement {
         )}
       </div>
       ${view === "table" && this.hits.length
-        ? html`<span style="position:relative" data-menu>
-            <button class="btn ghost sm" @click=${(e: Event) => this.toggleMenu("columns", e)}>${icon("columns", 14)} Columns</button>
+        ? html`<span data-menu>
+            <button class="btn ghost sm" aria-expanded=${this.menu === "columns"} @click=${(e: Event) => this.toggleMenu("columns", e)}>${icon("columns", 14)} Columns</button>
             ${this.menu === "columns" ? this.renderColumnsMenu() : nothing}
           </span>`
         : nothing}
-      <span style="position:relative" data-menu>
-        <button class="btn ghost sm" ?disabled=${!this.ranQuery} @click=${(e: Event) => this.toggleMenu("export", e)}>${icon("download", 14)} Export ${icon("chevronDown", 12)}</button>
+      <span data-menu>
+        <button class="btn ghost sm" aria-haspopup="menu" aria-expanded=${this.menu === "export"} ?disabled=${!this.ranQuery} @click=${(e: Event) => this.toggleMenu("export", e)}>${icon("download", 14)} Export ${icon("chevronDown", 12)}</button>
         ${this.menu === "export"
-          ? html`<div class="popover menu" role="menu" style="right:0;top:32px">
+          ? html`<div class="popover menu query-menu" role="menu">
               <div class="menu__label">Loaded rows (${formatNumber(this.hits.length)})</div>
               <button ?disabled=${!this.hits.length} @click=${() => this.exportLoaded("csv")}>CSV</button>
               <button ?disabled=${!this.hits.length} @click=${() => this.exportLoaded("ndjson")}>NDJSON</button>
@@ -1289,10 +1297,10 @@ export class MongExplore extends LightElement {
             </div>`
           : nothing}
       </span>
-      <span style="position:relative" data-menu>
-        <button class="btn secondary sm" ?disabled=${!canWrite} title=${this.caps.readOnly ? (this.caps.reasons.editable ?? "") : ""} @click=${(e: Event) => this.toggleMenu("add", e)}>${icon("plus", 14)} Add ${icon("chevronDown", 12)}</button>
+      <span data-menu>
+        <button class="btn secondary sm" aria-haspopup="menu" aria-expanded=${this.menu === "add"} ?disabled=${!canWrite} title=${this.caps.readOnly ? (this.caps.reasons.editable ?? "") : ""} @click=${(e: Event) => this.toggleMenu("add", e)}>${icon("plus", 14)} Add ${icon("chevronDown", 12)}</button>
         ${this.menu === "add"
-          ? html`<div class="popover menu" role="menu" style="right:0;top:32px">
+          ? html`<div class="popover menu query-menu" role="menu">
               <button @click=${() => ((this.menu = null), (this.drawer = "upsert"))}>${icon("edit", 14)} Upsert documents</button>
               <button @click=${() => ((this.menu = null), (this.drawer = "import"))}>${icon("upload", 14)} Import a file</button>
             </div>`
@@ -1303,7 +1311,7 @@ export class MongExplore extends LightElement {
 
   private renderColumnsMenu(): TemplateResult {
     const pref = this.columnPref;
-    return html`<div class="popover menu" style="right:0;top:32px;max-height:360px;overflow:auto;width:280px" @click=${(e: Event) => e.stopPropagation()}>
+    return html`<div class="popover menu query-menu query-menu--columns" @click=${(e: Event) => e.stopPropagation()}>
       <div class="menu__label">Show and pin columns</div>
       ${this.allColumns().map(
         (column) => html`<div class="row" style="padding:2px 8px;gap:6px">
@@ -1330,7 +1338,7 @@ export class MongExplore extends LightElement {
     if (!this.hits.length) {
       return html`<mong-empty
         heading="No matches"
-        .message=${"Nothing matched this query. Try a broader one, or check the field names in the rail."}
+        .message=${"Nothing matched this query. Try a broader one, or check the field names in Explore."}
       ></mong-empty>`;
     }
     const view = this.prefs.view;
@@ -1345,7 +1353,7 @@ export class MongExplore extends LightElement {
         ${shown.map(
           (hit) => html`<div class="card" style="padding:8px 12px">
             <div class="row between small" style="margin-bottom:4px">
-              <button class="btn ghost sm mono" @click=${() => (this.openHit = hit)}>${displayValue(hit.id) || hit.key}</button>
+              <button class="btn ghost sm mono result-id" @click=${() => (this.openHit = hit)}><span class="ellipsis">${displayValue(hit.id) || hit.key}</span></button>
               ${hit.score != null && this.ranQuery?.mode !== "browse" ? html`<span class="muted">score ${hit.score.toFixed(4)}</span>` : nothing}
             </div>
             <mong-json-tree .value=${hit.doc} expand-depth="1"></mong-json-tree>
@@ -1492,7 +1500,7 @@ export class MongExplore extends LightElement {
       <div class="page__head">
         <div class="page__title">
           <h1>Explore</h1>
-          <div class="hint">Ctrl+Enter runs the query.</div>
+          <div class="hint">Browse documents, run search queries, and analyze facets.<span class="run-shortcut"> Ctrl+Enter runs the query.</span></div>
         </div>
       </div>
       ${body}

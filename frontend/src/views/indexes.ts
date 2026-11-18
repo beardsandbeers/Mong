@@ -202,7 +202,7 @@ export class MongIndexes extends LightElement {
       <section class="card">
         <div class="card__head">
           <div class="row" style="flex:1">
-            <label class="input-search" style="min-width:240px;flex:0 1 320px">
+            <label class="input-search index-search">
               ${icon("search", 14)}
               <input
                 type="search"

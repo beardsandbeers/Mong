@@ -113,7 +113,7 @@ export class MongIndexStorage extends LightElement {
     const max = Math.max(1, ...items.map((item) => item.value));
     return html`<div class="stack" style="gap:6px">
       ${items.map(
-        (item) => html`<div style="display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr) 90px;gap:10px;align-items:center" title=${item.title ?? ""}>
+        (item) => html`<div class="storage-bar-row" title=${item.title ?? ""}>
           <span class="ellipsis small">${item.label}</span>
           <span class="bar-track" style="width:100%"><span class="bar" style="width:${Math.max(0.5, (item.value / max) * 100)}%"></span></span>
           <span class="num small">${formatBytes(item.value)}${item.extra ?? ""}</span>
