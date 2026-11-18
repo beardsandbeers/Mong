@@ -377,13 +377,13 @@ const FACET = {
     keySpecs: {
       operator: {
         kind: "operator",
-        required: true,
         enter() {
           return operatorSlot(null);
         },
       },
       facets: {
         kind: "object",
+        required: true,
         enter: {
           role: "keys",
           acceptsOperators: false,
