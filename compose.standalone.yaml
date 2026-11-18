@@ -3,7 +3,7 @@ name: mong-standalone
 # Independent of compose.yaml and the running mongo-search stack.
 services:
   mongot:
-    image: mybyte/nomongo-t:mongot-standalone-v0.10.0
+    image: mybyte/nomongo-t:mongot-standalone-v0.11.0
     platform: linux/amd64
     init: true
     restart: unless-stopped

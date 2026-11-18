@@ -4,7 +4,7 @@ Mong is a local admin console for [NoMongo-T](https://github.com/beardsandbeers/
 
 ## Layout
 
-- `src/mong/client.py` — TLS client to `localhost:27029` using `.nomongo-t/` credentials (`mongot-standalone-client` 0.10)
+- `src/mong/client.py` — TLS client to `localhost:27029` using `.nomongo-t/` credentials (`mongot-standalone-client` 0.11.0, pinned to the GitHub release wheel and its SHA-256)
 - `src/mong/service.py` — index, document, query, mapping-export, and statistics operations. Writes go to an index id; there is no collection catalog
 - `src/mong/mongod.py` — MongoDB-managed search indexes through pymongo: `$listSearchIndexes` listing, `$search` / `$vectorSearch` / `$searchMeta` queries, collection browse, explain, server-side cursors, and summary alerts. Enabled by `MONGODB_URI`
 - `src/mong/sources.py` — `SearchService`, the service the API and jobs use. `mongod:` index ids and `mongod-` cursor ids go to `mongod.py`; writes, statistics, and mapping export on those ids raise `READ_ONLY`

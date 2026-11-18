@@ -6,7 +6,7 @@ Admin UI and Python client for a locally running [NoMongo-T](https://github.com/
 
 For the [standalone Docker stack](#standalone-search--mong-two-containers), only Docker with a recent Compose plugin (supporting volume subpaths) is needed. For a local Python installation:
 
-- Docker with `nomongo-t` running `mybyte/nomongo-t:0.10.0` and healthy on port `27029`
+- Docker with `nomongo-t` running `mybyte/nomongo-t:0.11.0` and healthy on port `27029`
 - Python 3.11+
 
 ## Setup
@@ -29,17 +29,20 @@ docker cp nomongo-t:/var/lib/mongot/config/admin.token .nomongo-t/admin.token
 
 ### Upgrading the container
 
-0.3.x through 0.10.x share the push API and data directory, so an upgrade keeps indexes, documents, and credentials as long as the new container mounts the same `/var/lib/mongot` volume. A fresh volume regenerates `server.crt` and `admin.token` — re-copy them into `.nomongo-t/` after that. 0.7 and later store `lucene.standard` for an omitted analyzer; that is the same definition, not a change. 0.8 adds query explain and delete-by-query. 0.10 adds metadata-only search, direct reads of replicated indexes, and definition updates that can keep documents. Those need this client.
+0.3.x through 0.11.x share the push API and data directory, so an upgrade keeps indexes, documents, and credentials as long as the new container mounts the same `/var/lib/mongot` volume. A fresh volume regenerates `server.crt` and `admin.token` — re-copy them into `.nomongo-t/` after that. 0.7 and later store `lucene.standard` for an omitted analyzer; that is the same definition, not a change. 0.8 adds query explain and delete-by-query. 0.10 adds metadata-only search, direct reads of replicated indexes, and definition updates that can keep documents. Those need this client. [0.11.0](https://github.com/beardsandbeers/nomongo-t/releases/tag/standalone-v0.11.0) removes the fixed standalone index limit, improves join execution, and fixes recovery, RPC deadlines, and Docker write-readiness checks. The Python client and protobuf API are unchanged from 0.10.0.
 
 ```powershell
 $volume = (docker inspect nomongo-t --format '{{json .Mounts}}' | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.Destination -eq '/var/lib/mongot' }).Name
-docker pull mybyte/nomongo-t:0.10.0
+docker pull mybyte/nomongo-t:0.11.0
 docker stop nomongo-t
+# Back up the complete data directory while the server is stopped.
+# This directory contains credentials; keep it private and allow enough disk space.
+docker cp nomongo-t:/var/lib/mongot .nomongo-t/backup-pre-0.11.0
 docker rename nomongo-t nomongo-t-old
-docker run -d --name nomongo-t -p 27029:27029 -v "${volume}:/var/lib/mongot" mybyte/nomongo-t:0.10.0
+docker run -d --name nomongo-t -p 27029:27029 -v "${volume}:/var/lib/mongot" mybyte/nomongo-t:0.11.0
 ```
 
-Keep the server image and `mongot-standalone-client` on the same version. Collection-backed 0.2.x data directories are not compatible.
+Keep the server image and `mongot-standalone-client` on the same version. The 0.11.0 Python wheel is published as a GitHub release asset; PyPI currently has only 0.10.0. `pyproject.toml` pins the release wheel URL and SHA-256, so both local installs and Docker builds install the matching client without a separate download step. Re-run `pip install -e ".[dev]"` to update an existing local environment. Collection-backed 0.2.x data directories are not compatible.
 
 ## Run the admin UI
 
@@ -98,7 +101,7 @@ If mongod is unreachable, the dashboard shows a **MongoDB is unreachable** alert
 
 ### Standalone search + Mong (two containers)
 
-`compose.standalone.yaml` starts NoMongo-T 0.10.0 and builds Mong with the API and UI. It needs no MongoDB container, external network, existing secrets, or local Python/Node installation:
+`compose.standalone.yaml` starts NoMongo-T 0.11.0 and builds Mong with the API and UI. It needs no MongoDB container, external network, existing secrets, or local Python/Node installation:
 
 ```sh
 docker compose -f compose.standalone.yaml up -d --build --wait --wait-timeout 180
@@ -117,6 +120,8 @@ The standalone stack uses separate settings, so the existing `.env` MongoDB URI 
 | `STANDALONE_MONG_ALLOWED_HOSTS` | empty | Extra hostnames/IPs accepted by Mong |
 
 For remote access, set both `STANDALONE_MONG_BIND_IP` and `STANDALONE_MONG_ALLOWED_HOSTS` for the intended interface and hostname. The API has no authentication; publish it only on a trusted interface.
+
+When upgrading an existing standalone stack, stop `mongot` and back up its complete `/var/lib/mongot` directory before recreating it. For example, after `docker compose -f compose.standalone.yaml stop mongot`, use `docker cp mong-standalone-mongot-1:/var/lib/mongot .nomongo-t/backup-pre-0.11.0` (create `.nomongo-t/` first). Keep this backup private and ensure sufficient free disk space. Then run `docker compose -f compose.standalone.yaml pull mongot` and the `up --build --wait` command above. Reuse the existing volume; a rollback should restore the matching stopped backup.
 
 Manage only this stack with the same file:
 
@@ -287,7 +292,7 @@ Optional overrides:
 - `MONG_ALLOWED_HOSTS`: comma-separated extra hostnames to accept besides loopback
 - `MONGODB_URI`: lists and queries [MongoDB-managed indexes](#mongodb-managed-indexes) (off when unset)
 
-The Python client dependency is `mongot-standalone-client` 0.10.0, matching the push-only mongot API, cross-index `join` filters (including integer keys), query explain, delete-by-query, metadata-only search, and direct reads of replicated indexes. Bulk upserts default to write concern `indexed`. Delete-by-query defaults to `visible` and, in this admin API, to a dry run. Definition saves default to rebuilding an empty generation; `update_mode: preserve` keeps documents when the server can.
+The Python client dependency is `mongot-standalone-client` 0.11.0, matching the push-only mongot API, cross-index `join` filters (including integer keys), query explain, delete-by-query, metadata-only search, and direct reads of replicated indexes. Bulk upserts default to write concern `indexed`. Delete-by-query defaults to `visible` and, in this admin API, to a dry run. Definition saves default to rebuilding an empty generation; `update_mode: preserve` keeps documents when the server can.
 
 ## Frontend layout
 

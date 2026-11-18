@@ -11,7 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
     "faker>=30.0",
     "flask>=3.0",
-    "mongot-standalone-client==0.10.0",
+    # 0.11.0 is distributed on GitHub; PyPI currently stops at 0.10.0.
+    "mongot-standalone-client @ https://github.com/beardsandbeers/nomongo-t/releases/download/standalone-v0.11.0/mongot_standalone_client-0.11.0-py3-none-any.whl#sha256=7e9195a214318dce2092d64dba3f10a8305e8c2058f9da6dcf1c9c25c7f18e90",
     "tqdm>=4.66",
 ]
 
