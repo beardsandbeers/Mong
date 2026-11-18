@@ -145,6 +145,58 @@ it("offers the Aggregate tab in an embedded search index panel and disables it f
   expect(tab(vectors, "Vector").getAttribute("aria-selected")).toBe("true");
 });
 
+it("opens execution explain as a graph and remembers the resized panel across views and runs", async () => {
+  const explain = { aggregation: { partitionMerge: { millisElapsed: 2 } } };
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => path.endsWith("/search-meta")
+    ? Response.json({ metadata: {}, explain, explain_verbosity: "execution_stats", latency_ms: 5 })
+    : new Response(null, { status: 404 })));
+  const page = await mount();
+  tab(page, "Aggregate").click();
+  await page.updateComplete;
+  await setQuery(page, { exists: { path: "brand" } });
+  const select = page.querySelector<HTMLSelectElement>('select[aria-label="Explain"]')!;
+  select.value = "execution_stats";
+  select.dispatchEvent(new Event("change"));
+  await page.updateComplete;
+  button(page, "Run").click();
+
+  const views = await vi.waitFor(() => {
+    expect(page.querySelector("mong-explain-graph")?.textContent).toContain("Merge index partitions");
+    return page.querySelector('[aria-label="Explain view"]')!;
+  });
+  expect(button(views, "Graph").getAttribute("aria-pressed")).toBe("true");
+  const card = views.closest(".card")!;
+  const pane = card.querySelector<HTMLElement>(".explain-pane")!;
+  const grip = card.querySelector<HTMLElement>('[aria-label="Resize explain panel"]')!;
+  expect(pane.nextElementSibling).toBe(grip);
+  const initialHeight = parseFloat(pane.style.height);
+  grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  const resized = `${initialHeight + 24}px`;
+  expect(pane.style.height).toBe(resized);
+
+  button(views, "Tree").click();
+  await page.updateComplete;
+  expect(page.querySelector("mong-explain-tree")).toBeTruthy();
+  button(views, "Raw").click();
+  await page.updateComplete;
+  expect(pane.querySelector("pre")?.textContent).toContain('"partitionMerge"');
+  expect(pane.style.height).toBe(resized);
+  expect(card.querySelectorAll('[aria-label="Resize explain panel"]')).toHaveLength(1);
+
+  tab(page, "Search").click();
+  await page.updateComplete;
+  expect(page.querySelector(".explain-pane")).toBeNull();
+  tab(page, "Aggregate").click();
+  await page.updateComplete;
+  await setQuery(page, { exists: { path: "brand" } });
+  button(page, "Run").click();
+  await vi.waitFor(() => {
+    const next = page.querySelector<HTMLElement>(".explain-pane");
+    expect(next).not.toBe(pane);
+    expect(next?.style.height).toBe(resized);
+  });
+});
+
 it("preserves int64 bounds and places a numeric default bucket after the ranges", () => {
   const boundaries = ["9007199254740992", "9007199254740993", "9007199254740994"].map(($numberLong) => ({ $numberLong }));
   const facet = readFacet("prices", { buckets: [

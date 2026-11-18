@@ -2,6 +2,7 @@ import { html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { LightElement } from "../components/base";
 import type { Column } from "../components/data-table";
 import { confirmDialog, openDialog } from "../components/dialog";
+import "../components/explain-graph";
 import "../components/explain-tree";
 import "../components/facet-results";
 import { originBadge } from "../components/index-origin";
@@ -9,6 +10,7 @@ import "../components/tabs";
 import { icon } from "../components/icons";
 import { toast } from "../components/toast";
 import { FieldIndex, loadMappings } from "../editors/fields.js";
+import { addResizeGrip } from "../editors/resize-grip.js";
 import { startJob } from "../lib/actions";
 import { track } from "../lib/activity";
 import { api, errorMessage } from "../lib/api";
@@ -188,7 +190,7 @@ export class MongExplore extends LightElement {
   declare hits: Hit[];
   declare metadata: Record<string, unknown> | null;
   declare explainOut: Record<string, unknown> | null;
-  declare explainView: "tree" | "raw";
+  declare explainView: "graph" | "tree" | "raw";
   declare cursorId: string | null;
   declare hasMore: boolean;
   declare pageNo: number;
@@ -238,7 +240,7 @@ export class MongExplore extends LightElement {
     this.hits = [];
     this.metadata = null;
     this.explainOut = null;
-    this.explainView = "tree";
+    this.explainView = "graph";
     this.cursorId = null;
     this.hasMore = false;
     this.pageNo = 1;
@@ -407,7 +409,24 @@ export class MongExplore extends LightElement {
     }
   }
 
-  protected updated(): void {
+  protected updated(changed: PropertyValues): void {
+    const pane = this.explainOut && this.querySelector<HTMLElement>(".explain-pane");
+    if (pane && !pane.nextElementSibling) {
+      addResizeGrip(pane, {
+        height: Math.round(window.innerHeight * 0.72),
+        minHeight: 168,
+        storageKey: "explain",
+        label: "Resize explain panel",
+        fitHeight: () => {
+          const height = pane.style.height;
+          pane.style.height = "auto";
+          const contentHeight = pane.scrollHeight;
+          pane.style.height = height;
+          return contentHeight;
+        },
+      });
+    }
+    if (pane && changed.has("explainView")) pane.scrollTo(0, 0);
     if (this.pendingRun && this.index && !this.running && (this.mode === "browse" || this.editor)) {
       this.pendingRun = false;
       void this.run();
@@ -1400,28 +1419,32 @@ export class MongExplore extends LightElement {
 
   private renderExplain(): TemplateResult | typeof nothing {
     if (!this.explainOut) return nothing;
-    return html`<div class="card">
+    const viewer = this.explainView === "graph" ? html`<mong-explain-graph
+      .explain=${this.explainOut}
+      .query=${this.ranQuery?.query ?? null}
+      .indexName=${this.ranQuery?.index.name ?? ""}
+      .requestMillis=${this.timings.at(-1)?.mongot ?? null}
+      .resultCount=${countOf(this.metadata)}
+    ></mong-explain-graph>` : this.explainView === "tree" ? html`<mong-explain-tree
+      .explain=${this.explainOut}
+      .query=${this.ranQuery?.query ?? null}
+      .indexName=${this.ranQuery?.index.name ?? ""}
+      .requestMillis=${this.timings.at(-1)?.mongot ?? null}
+      .resultCount=${countOf(this.metadata)}
+    ></mong-explain-tree>` : html`<pre class="raw">${prettyJson(this.explainOut)}</pre>`;
+    return html`<div class="card explain-card">
       <div class="card__head">
         <h3>Explain</h3>
         <span class="hint">${EXPLAIN_OPTIONS.find((o) => o.id === this.explainVerbosity)?.label.replace("Explain: ", "") ?? ""}</span>
         <span class="spacer"></span>
         <div class="seg" role="group" aria-label="Explain view">
-          <button aria-pressed=${this.explainView === "tree" ? "true" : "false"} @click=${() => (this.explainView = "tree")}>Plan</button>
-          <button aria-pressed=${this.explainView === "raw" ? "true" : "false"} @click=${() => (this.explainView = "raw")}>Raw</button>
+          <button aria-pressed=${this.explainView === "graph"} @click=${() => (this.explainView = "graph")}>Graph</button>
+          <button aria-pressed=${this.explainView === "tree"} @click=${() => (this.explainView = "tree")}>Tree</button>
+          <button aria-pressed=${this.explainView === "raw"} @click=${() => (this.explainView = "raw")}>Raw</button>
         </div>
-        <button class="btn ghost sm" @click=${() => navigator.clipboard.writeText(prettyJson(this.explainOut)).then(() => toast("Copied explain output"))}>${icon("copy", 14)}</button>
+        <button class="btn ghost sm" aria-label="Copy explain output" @click=${() => navigator.clipboard.writeText(prettyJson(this.explainOut)).then(() => toast("Copied explain output"))}>${icon("copy", 14)}</button>
       </div>
-      <div class="card__body">
-        ${this.explainView === "tree"
-          ? html`<mong-explain-tree
-              .explain=${this.explainOut}
-              .query=${this.ranQuery?.query ?? null}
-              .indexName=${this.ranQuery?.index.name ?? ""}
-              .requestMillis=${this.timings.at(-1)?.mongot ?? null}
-              .resultCount=${countOf(this.metadata)}
-            ></mong-explain-tree>`
-          : html`<pre class="raw" style="max-height:420px;overflow:auto;margin:0">${prettyJson(this.explainOut)}</pre>`}
-      </div>
+      <div class="card__body"><div class="explain-pane">${viewer}</div></div>
     </div>`;
   }
 
