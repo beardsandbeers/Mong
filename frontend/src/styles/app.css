@@ -153,6 +153,10 @@ mong-app {
   gap: 2px;
 }
 
+.nav--mobile {
+  display: none;
+}
+
 .nav a,
 .nav button {
   display: flex;
@@ -212,31 +216,42 @@ mong-app {
   position: sticky;
   top: 0;
   z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  height: var(--topbar-height);
-  padding: 0 var(--space-5);
   background: color-mix(in srgb, var(--bg) 85%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
+}
+
+.topbar__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: calc(var(--topbar-height) - 1px);
+  padding: 0 var(--space-5);
 }
 
 .topbar__crumbs {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: 1;
   min-width: 0;
   font-weight: 600;
 }
 
+.topbar__crumbs > :not(.sep) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .topbar__crumbs .sep {
+  flex: none;
   color: var(--muted);
   font-weight: 400;
 }
 
-.topbar__spacer {
-  flex: 1;
+.topbar__jobs {
+  position: relative;
 }
 
 .page {
@@ -259,6 +274,8 @@ mong-app {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .page__actions {
@@ -561,6 +578,12 @@ a:focus-visible {
   width: 100%;
 }
 
+.index-search {
+  flex: 1 1 240px;
+  max-width: 320px;
+  min-width: 0;
+}
+
 .input-search svg {
   position: absolute;
   left: 9px;
@@ -709,6 +732,11 @@ a:focus-visible {
 }
 
 /* ---------- Tables ---------- */
+
+mong-data-table {
+  display: block;
+  min-width: 0;
+}
 
 .table-wrap {
   overflow: auto;
@@ -1015,6 +1043,15 @@ table.table {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
+}
+
+.jobs-popover {
+  right: 0;
+  top: calc(100% + var(--space-2));
+  width: 360px;
+  max-height: 70dvh;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
 .menu {
@@ -1575,6 +1612,44 @@ mong-json-tree {
   padding: var(--space-3);
 }
 
+.rail__toggle {
+  display: none;
+}
+
+.rail__tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.query-toolbar {
+  gap: var(--space-2);
+}
+
+.query-toolbar [data-menu] {
+  position: relative;
+}
+
+.query-menu {
+  right: 0;
+  top: calc(100% + var(--space-1));
+  max-height: min(360px, 55dvh);
+  overflow: auto;
+}
+
+.query-menu--snippets {
+  width: 300px;
+}
+
+.query-menu--columns {
+  width: 280px;
+}
+
+.result-id {
+  max-width: 100%;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -1848,8 +1923,20 @@ table.table.compact {
 
 .choice-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
   gap: var(--space-3);
+}
+
+.wizard-form {
+  grid-template-columns: minmax(0, 1fr) 300px;
+  align-items: start;
+}
+
+.storage-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 90px;
+  align-items: center;
+  gap: 10px;
 }
 
 .choice {

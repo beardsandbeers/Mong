@@ -1,5 +1,6 @@
 import "./styles/tokens.css";
 import "./styles/app.css";
+import "./styles/responsive.css";
 
 import "./editors/index.js";
 

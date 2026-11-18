@@ -94,8 +94,24 @@ export class MongApp extends LightElement {
 
   private readonly onToggleTheme = () => this.toggleTheme();
 
+  private readonly onMobileNav = (event: MouseEvent) => {
+    if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+  };
+
   private section(): string {
-    return this.router.route.segments[0] ?? "";
+    const section = this.router.route.segments[0] ?? "";
+    return section === "dashboard" ? "" : section;
+  }
+
+  private mainNav(section: string, mobile = false): TemplateResult {
+    return html`<nav class="nav ${mobile ? "nav--mobile" : ""}" aria-label="Main">
+      ${NAV.map((item) => html`<a href=${href(item.path)}
+        class=${section === item.path ? "active" : ""}
+        aria-current=${section === item.path ? "page" : nothing}
+        @click=${mobile ? this.onMobileNav : nothing}
+      >${icon(item.glyph)} <span>${item.label}</span></a>`)}
+    </nav>`;
   }
 
   private crumbs(): TemplateResult {
@@ -103,7 +119,7 @@ export class MongApp extends LightElement {
     const part = (label: string, link?: string) =>
       link ? html`<a href=${link} style="color:inherit">${label}</a>` : html`<span>${label}</span>`;
     const sep = html`<span class="sep">/</span>`;
-    if (!first) return part("Dashboard");
+    if (!first || first === "dashboard") return part("Dashboard");
     if (first === "indexes") {
       if (!second) return part("Indexes");
       if (second === "new") return html`${part("Indexes", href("indexes"))}${sep}${part("New index")}`;
@@ -154,8 +170,8 @@ export class MongApp extends LightElement {
             ? "Disconnected"
             : "Connecting…";
     const title = summary?.sampled_at ? `Last sample ${new Date(summary.sampled_at * 1000).toLocaleTimeString()}` : "";
-    return html`<a class="pill" data-tone=${tone} href="#/" title=${title}>
-      <span class="dot ${connection === "unknown" ? "pulse" : ""}" data-tone=${tone}></span>${label}
+    return html`<a class="pill topbar__connection" data-tone=${tone} href="#/" aria-label=${label} title=${title || label}>
+      <span class="dot ${connection === "unknown" ? "pulse" : ""}" data-tone=${tone}></span><span class="topbar__connection-label">${label}</span>
     </a>`;
   }
 
@@ -188,13 +204,7 @@ export class MongApp extends LightElement {
             <div class="brand__sub">NoMongo-T console</div>
           </span>
         </a>
-        <nav class="nav" aria-label="Main">
-          ${NAV.map(
-            (item) => html`<a href=${href(item.path)} class=${section === item.path || (!section && !item.path) ? "active" : ""}>
-              ${icon(item.glyph)} ${item.label}
-            </a>`,
-          )}
-        </nav>
+        ${this.mainNav(section)}
         <nav class="nav" aria-label="Indexes">
           <div class="nav__section row between">
             <span>Indexes <span class="badge">${indexes.length}</span></span>
@@ -213,32 +223,35 @@ export class MongApp extends LightElement {
       </aside>
       <div class="main">
         <header class="topbar">
-          <div class="topbar__crumbs ellipsis">${this.crumbs()}</div>
-          <div class="topbar__spacer"></div>
-          ${this.connectionPill()}
-          <div style="position:relative">
+          <div class="topbar__main">
+            <div class="topbar__crumbs ellipsis">${this.crumbs()}</div>
+            ${this.connectionPill()}
+            <div class="topbar__jobs">
+              <button
+                class="btn ghost"
+                aria-expanded=${this.jobsOpen ? "true" : "false"}
+                @click=${() => (this.jobsOpen = !this.jobsOpen)}
+                title="Background jobs"
+              >
+                ${icon("briefcase")} Jobs${activeJobs ? html`<span class="badge accent">${activeJobs}</span>` : nothing}
+              </button>
+              ${this.jobsOpen
+                ? html`<mong-jobs-panel @close=${() => (this.jobsOpen = false)}></mong-jobs-panel>`
+                : nothing}
+            </div>
             <button
-              class="btn ghost"
-              aria-expanded=${this.jobsOpen ? "true" : "false"}
-              @click=${() => (this.jobsOpen = !this.jobsOpen)}
-              title="Background jobs"
+              class="btn ghost topbar__palette"
+              title="Command palette (Ctrl+K)"
+              aria-label="Command palette"
+              @click=${() => window.dispatchEvent(new CustomEvent("mong:palette"))}
             >
-              ${icon("briefcase")} Jobs${activeJobs ? html`<span class="badge accent">${activeJobs}</span>` : nothing}
+              ${icon("command")} <span class="kbd">Ctrl K</span>
             </button>
-            ${this.jobsOpen
-              ? html`<mong-jobs-panel @close=${() => (this.jobsOpen = false)}></mong-jobs-panel>`
-              : nothing}
+            <button class="btn ghost icon" title="Toggle theme" aria-label="Toggle theme" @click=${() => this.toggleTheme()}>
+              ${icon(this.theme === "dark" ? "sun" : "moon")}
+            </button>
           </div>
-          <button
-            class="btn ghost"
-            title="Command palette (Ctrl+K)"
-            @click=${() => window.dispatchEvent(new CustomEvent("mong:palette"))}
-          >
-            ${icon("command")} <span class="kbd">Ctrl K</span>
-          </button>
-          <button class="btn ghost icon" title="Toggle theme" aria-label="Toggle theme" @click=${() => this.toggleTheme()}>
-            ${icon(this.theme === "dark" ? "sun" : "moon")}
-          </button>
+          ${this.mainNav(section, true)}
         </header>
         ${this.banner()}
         ${this.page()}

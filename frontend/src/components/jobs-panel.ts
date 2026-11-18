@@ -96,10 +96,10 @@ export class MongJobsPanel extends LightElement {
 
   render() {
     const { jobs, lostJobs } = this.app.value;
-    return html`<div class="popover" style="right:0;top:40px;width:360px;max-height:70vh;overflow:auto">
+    return html`<div class="popover jobs-popover">
       <div class="row between" style="padding:10px 12px;border-bottom:1px solid var(--line)">
         <strong>Background jobs</strong>
-        <span class="hint">Run on the server; closing the tab is fine</span>
+        <button class="btn ghost sm icon" aria-label="Close jobs" @click=${() => this.dispatchEvent(new CustomEvent("close"))}>${icon("x", 14)}</button>
       </div>
       ${lostJobs.map((job) => this.row(job, true))}
       ${jobs.map((job) => this.row(job))}
